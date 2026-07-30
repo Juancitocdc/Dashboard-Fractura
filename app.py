@@ -74,7 +74,7 @@ def cargar_datos_desde_google(url):
         
     archivo_excel = io.BytesIO(respuesta.content)
     
-    # 1. Cargamos las hojas
+    # 1. Cargamos las hojas eliminando filas totalmente vacías
     h2 = pd.read_excel(archivo_excel, sheet_name='2_Base_Mapeada_Tiempos').dropna(how='all')
     h4 = pd.read_excel(archivo_excel, sheet_name='4_Detalle_Tiempos_Bombeo').dropna(how='all')
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs').dropna(how='all')
@@ -85,49 +85,87 @@ def cargar_datos_desde_google(url):
     h8.columns = h8.columns.str.strip()
     h9.columns = h9.columns.str.strip()
 
-    # 2. Limpieza de fechas
-    h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
-    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce', dayfirst=True)
-    h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
-    h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce', dayfirst=True).dt.normalize()
-    h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
-    h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce', dayfirst=True)
-    h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce', dayfirst=True)
+    # Función ultra-robusta para parsear fechas de Excel (texto o números seriales)
+    def parse_date_robust(serie):
+        if serie is None or serie.empty:
+            return pd.Series(pd.NaT, index=serie.index if hasattr(serie, 'index') else None)
+        res = pd.to_datetime(serie, errors='coerce', dayfirst=True)
+        mask_nat = res.isna() & serie.notna()
+        if mask_nat.any():
+            try:
+                num_val = pd.to_numeric(serie[mask_nat], errors='coerce')
+                res[mask_nat] = pd.to_datetime(num_val, unit='D', origin='1899-12-30', errors='coerce')
+            except:
+                pass
+        return res.dt.normalize()
 
-    # 3. Mapeo de Yacimiento y PAD
+    # 2. Aplicar limpieza robusta de fechas
+    if 'fecha_reporte' in h2.columns: h2['fecha_reporte'] = parse_date_robust(h2['fecha_reporte'])
+    if 'fecha_fin' in h2.columns: h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce', dayfirst=True)
+    
+    if 'fecha_reporte' in h4.columns: h4['fecha_reporte'] = parse_date_robust(h4['fecha_reporte'])
+    if 'fecha reporte' in h8.columns: h8['fecha reporte'] = parse_date_robust(h8['fecha reporte'])
+    
+    if 'fecha_reporte' in h9.columns: h9['fecha_reporte'] = parse_date_robust(h9['fecha_reporte'])
+    if 'fecha_hora_inicio' in h9.columns: h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce', dayfirst=True)
+    if 'fecha_hora_fin' in h9.columns: h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce', dayfirst=True)
+
+    # 3. Mapeo de Yacimiento y PAD desde h2
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
-    mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
+    if 'fecha_reporte' in h2.columns and not h2['fecha_reporte'].dropna().empty:
+        mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
+        h8 = pd.merge(h8, mapa_ubicacion, left_on='fecha reporte', right_on='fecha_reporte', how='left')
+        h9 = pd.merge(h9, mapa_ubicacion, on='fecha_reporte', how='left')
     
-    yac_dominante = h2['Yacimiento'].dropna().mode()[0] if not h2['Yacimiento'].dropna().empty else "Desconocido"
-    pad_dominante = h2['PAD'].dropna().mode()[0] if not h2['PAD'].dropna().empty else "Desconocido"
+    yac_dominante = h2['Yacimiento'].dropna().mode()[0] if ('Yacimiento' in h2.columns and not h2['Yacimiento'].dropna().empty) else "Yacimiento_A"
+    pad_dominante = h2['PAD'].dropna().mode()[0] if ('PAD' in h2.columns and not h2['PAD'].dropna().empty) else "PAD_Default"
 
-    h8 = pd.merge(h8, mapa_ubicacion, left_on='fecha reporte', right_on='fecha_reporte', how='left')
-    h9 = pd.merge(h9, mapa_ubicacion, on='fecha_reporte', how='left')
-    
-    h8['Yacimiento'] = h8['Yacimiento'].fillna(yac_dominante)
-    h8['PAD'] = h8['PAD'].fillna(pad_dominante)
-    h9['Yacimiento'] = h9['Yacimiento'].fillna(yac_dominante)
-    h9['PAD'] = h9['PAD'].fillna(pad_dominante)
+    for df_target in [h8, h9]:
+        if 'Yacimiento' in df_target.columns: df_target['Yacimiento'] = df_target['Yacimiento'].fillna(yac_dominante)
+        else: df_target['Yacimiento'] = yac_dominante
+        if 'PAD' in df_target.columns: df_target['PAD'] = df_target['PAD'].fillna(pad_dominante)
+        else: df_target['PAD'] = pad_dominante
 
     # 4. Normalizar secuencias numéricas
-    h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
-    h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
+    if 'secuencia_diaria' in h4.columns:
+        h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
+    if 'secuencia_diaria' in h9.columns:
+        h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
 
-    # 5. Cruzar con la Hoja 4 para traer Pozo, Etapa y ASEGURAR LA FECHA CORRECTA
-    h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
-                  on=['fecha_reporte', 'secuencia_diaria'], how='left', suffixes=('', '_h4'))
-                  
-    # ---> RESCATE DE FECHA: Si h9 vino sin fecha, le inyectamos la fecha limpia de h4 <---
-    if 'fecha_reporte_h4' in h9.columns:
-        h9['fecha_reporte'] = h9['fecha_reporte'].fillna(h9['fecha_reporte_h4'])
+    # 5. Cruzar con la Hoja 4 para traer Pozo y Etapa
+    if 'secuencia_diaria' in h9.columns and 'secuencia_diaria' in h4.columns:
+        h4_subset = h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']].copy()
+        h9 = pd.merge(h9, h4_subset, on=['fecha_reporte', 'secuencia_diaria'], how='left', suffixes=('', '_h4'))
+        
+        missing_pozo = h9['nombre_pozo'].isna() if 'nombre_pozo' in h9.columns else pd.Series(True, index=h9.index)
+        if missing_pozo.any():
+            h4_sec_only = h4_subset.drop(columns=['fecha_reporte']).drop_duplicates(subset=['secuencia_diaria'])
+            h9 = pd.merge(h9, h4_sec_only, on='secuencia_diaria', how='left', suffixes=('', '_sec'))
+            if 'nombre_pozo_sec' in h9.columns:
+                h9['nombre_pozo'] = h9['nombre_pozo'].fillna(h9['nombre_pozo_sec'])
+            if 'nro_etapa_sec' in h9.columns:
+                h9['nro_etapa'] = h9['nro_etapa'].fillna(h9['nro_etapa_sec'])
 
-    h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
-    
-    # Si las horas de inicio/fin no vinieron, las estimamos en base a la fecha de reporte para que el Gantt no explote
-    h9['fecha_hora_inicio'] = h9['fecha_hora_inicio'].fillna(pd.to_datetime(h9['fecha_reporte']))
-    h9['fecha_hora_fin'] = h9['fecha_hora_fin'].fillna(h9['fecha_hora_inicio'] + pd.Timedelta(hours=2))
+    if 'nombre_pozo' not in h9.columns: h9['nombre_pozo'] = "Pozo S/D"
+    else: h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
 
-    h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
+    if 'nro_etapa' not in h9.columns: h9['nro_etapa'] = 1
+    else: h9['nro_etapa'] = h9['nro_etapa'].fillna(1)
+
+    # Asegurar fechas de reporte válidas en h9
+    if 'fecha_reporte' in h9.columns:
+        h9['fecha_reporte'] = h9['fecha_reporte'].fillna(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+    else:
+        h9['fecha_reporte'] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if 'fecha_hora_inicio' in h9.columns:
+        h9['fecha_hora_inicio'] = h9['fecha_hora_inicio'].fillna(pd.to_datetime(h9['fecha_reporte']))
+        h9['fecha_hora_fin'] = h9['fecha_hora_fin'].fillna(h9['fecha_hora_inicio'] + pd.Timedelta(hours=2))
+    else:
+        h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_reporte'])
+        h9['fecha_hora_fin'] = h9['fecha_hora_inicio'] + pd.Timedelta(hours=2)
+
+    h9['fecha_reporte_cp'] = (pd.to_datetime(h9['fecha_hora_inicio']) - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
     
     return h2, h8, h9
 
@@ -263,7 +301,6 @@ try:
                 })
             st.dataframe(pd.DataFrame(resumen_macro), use_container_width=True, hide_index=True)
 
-
     # ==========================================
     # SECCIÓN 2: CONTINUOUS PUMPING
     # ==========================================
@@ -338,7 +375,6 @@ try:
                 
                 posibles_acum_ayer = posibles_acum_hoy
                 
-            # ---> TABLA BLINDADA: Siempre muestra las columnas, incluso si no hay datos <---
             columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Etapas Posibles CP (Acum-4)"]
             df_cuadro1 = pd.DataFrame(datos_cp) if datos_cp else pd.DataFrame(columns=columnas_tabla)
             st.dataframe(df_cuadro1, use_container_width=True, hide_index=True)
