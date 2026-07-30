@@ -14,21 +14,19 @@ from google.oauth2 import service_account
 import json
 
 # ==========================================
-# CONFIGURACIÓN DE LA PÁGINA
+# CONFIGURACIÓN DE LA PÁGINA Y SEGURIDAD
 # ==========================================
 st.set_page_config(page_title="Dashboard de Fractura", layout="wide", initial_sidebar_state="expanded")
 
-# ==========================================
-# 🔒 SISTEMA DE ACCESO POR PIN
-# ==========================================
-PIN_OPERATIVO = "FRAC2026" # <--- ACÁ PODÉS CAMBIAR LA CONTRASEÑA
+# --- SISTEMA DE ACCESO POR PIN ---
+PIN_OPERATIVO = "FRAC2026" # <--- CAMBIÁ EL PIN ACÁ
 
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
 
 if not st.session_state["acceso_concedido"]:
     st.markdown("<h1 style='text-align: center;'>🔒 Tablero Operativo Restringido</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Ingrese el código de autorización para visualizar los datos de perforación y fractura.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Ingrese el código de autorización para visualizar los datos.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
@@ -39,15 +37,10 @@ if not st.session_state["acceso_concedido"]:
                 st.rerun()
             else:
                 st.error("❌ PIN incorrecto. Acceso denegado.")
-    st.stop() # Esto bloquea todo el código de abajo si no ponen el PIN
+    st.stop() 
 
 # ==========================================
-# 🔗 ENLACE AL EXCEL (FORMATO EXPORTACIÓN)
-# ==========================================
-URL_DEL_EXCEL = "https://docs.google.com/spreadsheets/d/1ExsBgW_v9w5k_Yve19650zqBAdPA4jUH/export?format=xlsx"
-
-# ==========================================
-# PARÁMETROS STD (OBJETIVOS / ESTÁNDARES)
+# PARÁMETROS STD
 # ==========================================
 PARAMETROS_STD = {
     "Yacimiento_A": {"Etapas_Dia_STD": 8.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0},
@@ -56,46 +49,43 @@ PARAMETROS_STD = {
 }
 
 # ==========================================
-# FUNCIONES DE CARGA SEGURA DESDE GOOGLE
+# DESCARGA SEGURA Y PROCESAMIENTO
 # ==========================================
-@st.cache_data(ttl=600)
+URL_DEL_EXCEL = "https://docs.google.com/spreadsheets/d/1ExsBgW_v9w5k_Yve19650zqBAdPA4jUH/export?format=xlsx"
+
+@st.cache_data(ttl=600) 
 def cargar_datos_desde_google(url):
-    # 1. Leemos la llave secreta como texto y la convertimos a diccionario con JSON
     credenciales_dict = json.loads(st.secrets["gcp_json"])
     credentials = service_account.Credentials.from_service_account_info(
         credenciales_dict,
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
     )
     
-    # 2. Generamos el pase de acceso (Token)
     auth_req = google.auth.transport.requests.Request()
     credentials.refresh(auth_req)
     token = credentials.token
     
-    # 3. Descargamos el archivo haciéndonos pasar por el bot
     headers = {"Authorization": f"Bearer {token}"}
     respuesta = requests.get(url, headers=headers)
     
     if respuesta.status_code != 200:
-        st.error(f"Error de permisos o conexión. Código: {respuesta.status_code}. ¿Le diste permiso de Lector al bot en tu Excel?")
+        st.error(f"Error descargando el archivo. Código: {respuesta.status_code}")
         st.stop()
         
     archivo_excel = io.BytesIO(respuesta.content)
     
-    # 4. Procesamos los datos
-    h2 = pd.read_excel(archivo_excel, sheet_name='2_Base_Mapeada_Tiempos')
-    h4 = pd.read_excel(archivo_excel, sheet_name='4_Detalle_Tiempos_Bombeo')
-    h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs')
-    h9 = pd.read_excel(archivo_excel, sheet_name='9_Revision_Continuous_Pumping')
+    # 4. Procesamos los datos y ELIMINAMOS FILAS FANTASMA
+    h2 = pd.read_excel(archivo_excel, sheet_name='2_Base_Mapeada_Tiempos').dropna(how='all')
+    h4 = pd.read_excel(archivo_excel, sheet_name='4_Detalle_Tiempos_Bombeo').dropna(how='all')
+    h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs').dropna(how='all')
+    h9 = pd.read_excel(archivo_excel, sheet_name='9_Revision_Continuous_Pumping').dropna(how='all')
     
-    # ---> SOLUCIÓN DEFINITIVA: BLINDAJE DE CRUCES SILENCIOSOS <---
-    # 1. Limpiamos espacios basura ocultos en las columnas
     h2.columns = h2.columns.str.strip()
     h4.columns = h4.columns.str.strip()
     h8.columns = h8.columns.str.strip()
     h9.columns = h9.columns.str.strip()
 
-    # 2. Normalizamos Fechas (limpieza de horas)
+    # Normalizamos Fechas
     h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce').dt.normalize()
     h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce')
     h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce').dt.normalize()
@@ -104,36 +94,31 @@ def cargar_datos_desde_google(url):
     h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce')
     h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce')
 
-    # 3. Mapeo de Yacimiento y PAD con "Red de Rescate"
+    # ---> FILTRO DE HIERRO: Si no hay fecha de inicio, no es un bombeo real (chao fila fantasma) <---
+    h9.dropna(subset=['fecha_hora_inicio'], inplace=True)
+
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
     mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
     
-    # Extraer Yac/PAD dominantes por si las fechas de h9 y h2 tienen defasaje
     yac_dominante = h2['Yacimiento'].dropna().mode()[0] if not h2['Yacimiento'].dropna().empty else "Desconocido"
     pad_dominante = h2['PAD'].dropna().mode()[0] if not h2['PAD'].dropna().empty else "Desconocido"
 
     h8 = pd.merge(h8, mapa_ubicacion, left_on='fecha reporte', right_on='fecha_reporte', how='left')
     h9 = pd.merge(h9, mapa_ubicacion, on='fecha_reporte', how='left')
     
-    # Forzar el llenado si el cruce de fechas falló
     h8['Yacimiento'] = h8['Yacimiento'].fillna(yac_dominante)
     h8['PAD'] = h8['PAD'].fillna(pad_dominante)
     h9['Yacimiento'] = h9['Yacimiento'].fillna(yac_dominante)
     h9['PAD'] = h9['PAD'].fillna(pad_dominante)
 
-    # 4. Arreglar "secuencia_diaria" para que el cruce Pozo/Etapa sea perfecto
     h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
     h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
 
-    # 5. Cruzar Pozo y Etapa
     h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
                   on=['fecha_reporte', 'secuencia_diaria'], how='left')
                   
-    # Rescate de Pozo vacío para que JAMÁS desaparezca el Gantt
     h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
-    
     h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
-    # --------------------------------------------------------
     
     return h2, h8, h9
 
@@ -142,19 +127,16 @@ def cargar_datos_desde_google(url):
 # ==========================================
 st.sidebar.title("⚙️ Panel de Control")
 
-# Botón para forzar actualización manual (Limpia el caché)
-if st.sidebar.button("🔄 Actualizar Datos Ahora"):
+if st.sidebar.button("🔄 Forzar Actualización Ahora"):
     st.cache_data.clear()
     st.rerun()
 
 try:
-    with st.spinner('Conectando de forma segura con la base de datos...'):
+    with st.spinner('Conectando a base de datos segura...'):
         df_h2, df_h8, df_h9 = cargar_datos_desde_google(URL_DEL_EXCEL)
         
-    # --- INDICADORES DE ACTUALIZACIÓN ---
     zona_ar = pytz.timezone('America/Argentina/Buenos_Aires')
     hora_actual = datetime.now(zona_ar).strftime("%d/%m/%Y %H:%M hs")
-    
     ultima_op = pd.to_datetime(df_h2['fecha_fin'], errors='coerce').max()
     hora_op = ultima_op.strftime("%d/%m/%Y %H:%M hs") if pd.notnull(ultima_op) else "Sin datos"
     
@@ -177,13 +159,14 @@ try:
         
         tab1, tab2 = st.tabs(["📊 Pestaña 1 (Detalle Diario)", "📋 Pestaña 2 (Resumen Global)"])
         
-        # --- Pestaña 1: Detalle Diario ---
         with tab1:
             col_s1, col_s2 = st.columns(2)
             yacimientos_disp = df_h8['Yacimiento'].dropna().unique().tolist()
+            if not yacimientos_disp: yacimientos_disp = ["S/D"]
             with col_s1: sel_yac_t1 = st.selectbox("Seleccionar Yacimiento (P1):", yacimientos_disp)
             
             pads_disp = df_h8[df_h8['Yacimiento'] == sel_yac_t1]['PAD'].dropna().unique().tolist()
+            if not pads_disp: pads_disp = ["S/D"]
             with col_s2: sel_pad_t1 = st.selectbox("Seleccionar PAD (P1):", pads_disp)
             
             df_t1 = df_h8[(df_h8['Yacimiento'] == sel_yac_t1) & (df_h8['PAD'] == sel_pad_t1)].sort_values('fecha reporte').copy()
@@ -240,7 +223,6 @@ try:
             })
             st.dataframe(cuadro2, use_container_width=True, hide_index=True)
 
-        # --- Pestaña 2: Resumen Global ---
         with tab2:
             col_m1, col_m2 = st.columns(2)
             with col_m1: sel_yac_t2 = st.multiselect("Seleccionar Yacimiento(s) (P2):", yacimientos_disp, default=yacimientos_disp)
@@ -272,7 +254,7 @@ try:
                 })
             st.dataframe(pd.DataFrame(resumen_macro), use_container_width=True, hide_index=True)
 
-    # ==========================================
+
     # ==========================================
     # SECCIÓN 2: CONTINUOUS PUMPING
     # ==========================================
@@ -284,9 +266,11 @@ try:
         with tab3:
             col_c1, col_c2 = st.columns(2)
             yacimientos_disp = df_h9['Yacimiento'].dropna().unique().tolist()
+            if not yacimientos_disp: yacimientos_disp = ["S/D"]
             with col_c1: sel_yac_c1 = st.selectbox("Seleccionar Yacimiento (C1):", yacimientos_disp)
             
             pads_disp = df_h9[df_h9['Yacimiento'] == sel_yac_c1]['PAD'].dropna().unique().tolist()
+            if not pads_disp: pads_disp = ["S/D"]
             with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp)
             
             df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].sort_values('fecha_hora_inicio').copy()
@@ -298,9 +282,8 @@ try:
             
             st.subheader(f"Cuadro 1 - Evolución CP ({sel_pad_c1})")
             
-            # --- BLINDAJE CONTRA FECHAS VACÍAS (NaT) ---
             todas_las_fechas = set(df_c1_h9['fecha_reporte'].dropna()) | set(df_c1_h9['fecha_reporte_cp'].dropna())
-            fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) # <--- Filtra los NaT
+            fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) 
             
             std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
             
@@ -346,7 +329,10 @@ try:
                 
                 posibles_acum_ayer = posibles_acum_hoy
                 
-            st.dataframe(pd.DataFrame(datos_cp), use_container_width=True, hide_index=True)
+            # ---> TABLA BLINDADA: Siempre muestra las columnas, incluso si no hay datos <---
+            columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Etapas Posibles CP (Acum-4)"]
+            df_cuadro1 = pd.DataFrame(datos_cp) if datos_cp else pd.DataFrame(columns=columnas_tabla)
+            st.dataframe(df_cuadro1, use_container_width=True, hide_index=True)
             
             st.subheader("Línea de Tiempo (Gantt) - FRAC & CP")
             
@@ -355,7 +341,6 @@ try:
             df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Logró CP)', 'FRAC (Sin CP)')
             df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
             
-            # --- BLINDAJE DEL GANTT ---
             if not df_gantt.empty:
                 fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
                                   color="Tipo_FRAC",
@@ -375,20 +360,22 @@ try:
                 st.subheader("Listado de Transiciones")
                 df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy()
                 tabla1 = pd.DataFrame({
-                    "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D'),
-                    "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo']
+                    "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D') if not df_trans.empty else [],
+                    "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo'] if not df_trans.empty else []
                 })
+                if tabla1.empty: tabla1 = pd.DataFrame(columns=["Fecha", "Transición (Pozo/Etapa)"])
                 st.dataframe(tabla1, use_container_width=True, hide_index=True)
 
             with col_t2:
                 st.subheader("Etapas que lograron CP")
                 df_logrados = df_c1_h9[df_c1_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5].copy()
                 tabla2 = pd.DataFrame({
-                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D'),
-                    "Pozo": df_logrados['nombre_pozo'],
-                    "Etapa Nro": df_logrados['nro_etapa'].fillna(0).astype(int),
-                    "Secuencia Diaria": df_logrados['secuencia_diaria'].fillna(0).astype(int)
+                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D') if not df_logrados.empty else [],
+                    "Pozo": df_logrados['nombre_pozo'] if not df_logrados.empty else [],
+                    "Etapa Nro": df_logrados['nro_etapa'].fillna(0).astype(int) if not df_logrados.empty else [],
+                    "Secuencia Diaria": df_logrados['secuencia_diaria'].fillna(0).astype(int) if not df_logrados.empty else []
                 })
+                if tabla2.empty: tabla2 = pd.DataFrame(columns=["Fecha de Reporte", "Pozo", "Etapa Nro", "Secuencia Diaria"])
                 st.dataframe(tabla2, use_container_width=True, hide_index=True)
 
         with tab4:
@@ -407,7 +394,6 @@ try:
                 yac = df_pad_h9['Yacimiento'].iloc[0]
                 std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
                 
-                # --- BLINDAJE DE ÚLTIMA FECHA ---
                 max_fecha = df_pad_h9['fecha_reporte'].max()
                 ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
                 
@@ -433,7 +419,8 @@ try:
                     "Posibles CP (Total - 4)": etapas_posibles
                 })
             
-            st.dataframe(pd.DataFrame(resumen_cp), use_container_width=True, hide_index=True)
+            df_resumen = pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=["Yacimiento", "PAD", "Última Fecha", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Posibles CP (Total - 4)"])
+            st.dataframe(df_resumen, use_container_width=True, hide_index=True)
 
 except Exception as e:
     st.error(f"❌ Ocurrió un error al procesar el tablero. Detalles: {e}")
