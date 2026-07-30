@@ -85,7 +85,7 @@ def cargar_datos_desde_google(url):
     h8.columns = h8.columns.str.strip()
     h9.columns = h9.columns.str.strip()
 
-    # Función ultra-robusta para parsear fechas de Excel (texto o números seriales)
+    # Función robusta para parsear fechas de Excel
     def parse_date_robust(serie):
         if serie is None or serie.empty:
             return pd.Series(pd.NaT, index=serie.index if hasattr(serie, 'index') else None)
@@ -99,7 +99,7 @@ def cargar_datos_desde_google(url):
                 pass
         return res.dt.normalize()
 
-    # 2. Aplicar limpieza robusta de fechas
+    # 2. Limpieza de fechas
     if 'fecha_reporte' in h2.columns: h2['fecha_reporte'] = parse_date_robust(h2['fecha_reporte'])
     if 'fecha_fin' in h2.columns: h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce', dayfirst=True)
     
@@ -132,7 +132,7 @@ def cargar_datos_desde_google(url):
     if 'secuencia_diaria' in h9.columns:
         h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
 
-    # 5. Cruzar con la Hoja 4 para traer Pozo y Etapa
+    # 5. Cruce robusto con la Hoja 4 para traer Pozo y Etapa reales
     if 'secuencia_diaria' in h9.columns and 'secuencia_diaria' in h4.columns:
         h4_subset = h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']].copy()
         h9 = pd.merge(h9, h4_subset, on=['fecha_reporte', 'secuencia_diaria'], how='left', suffixes=('', '_h4'))
@@ -141,29 +141,19 @@ def cargar_datos_desde_google(url):
         if missing_pozo.any():
             h4_sec_only = h4_subset.drop(columns=['fecha_reporte']).drop_duplicates(subset=['secuencia_diaria'])
             h9 = pd.merge(h9, h4_sec_only, on='secuencia_diaria', how='left', suffixes=('', '_sec'))
-            if 'nombre_pozo_sec' in h9.columns:
+            if 'nombre_pozo_sec' in h9.columns and 'nombre_pozo' in h9.columns:
                 h9['nombre_pozo'] = h9['nombre_pozo'].fillna(h9['nombre_pozo_sec'])
-            if 'nro_etapa_sec' in h9.columns:
+            if 'nro_etapa_sec' in h9.columns and 'nro_etapa' in h9.columns:
                 h9['nro_etapa'] = h9['nro_etapa'].fillna(h9['nro_etapa_sec'])
 
     if 'nombre_pozo' not in h9.columns: h9['nombre_pozo'] = "Pozo S/D"
     else: h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
 
-    if 'nro_etapa' not in h9.columns: h9['nro_etapa'] = 1
-    else: h9['nro_etapa'] = h9['nro_etapa'].fillna(1)
+    if 'nro_etapa' not in h9.columns: h9['nro_etapa'] = 0
+    else: h9['nro_etapa'] = h9['nro_etapa'].fillna(0)
 
-    # Asegurar fechas de reporte válidas en h9
-    if 'fecha_reporte' in h9.columns:
-        h9['fecha_reporte'] = h9['fecha_reporte'].fillna(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
-    else:
-        h9['fecha_reporte'] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
-    if 'fecha_hora_inicio' in h9.columns:
-        h9['fecha_hora_inicio'] = h9['fecha_hora_inicio'].fillna(pd.to_datetime(h9['fecha_reporte']))
-        h9['fecha_hora_fin'] = h9['fecha_hora_fin'].fillna(h9['fecha_hora_inicio'] + pd.Timedelta(hours=2))
-    else:
-        h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_reporte'])
-        h9['fecha_hora_fin'] = h9['fecha_hora_inicio'] + pd.Timedelta(hours=2)
+    # ---> FILTRO ESTRICTO: Descartamos filas sin fechas o tiempos reales (Cero inventos) <---
+    h9.dropna(subset=['fecha_reporte', 'fecha_hora_inicio', 'fecha_hora_fin'], inplace=True)
 
     h9['fecha_reporte_cp'] = (pd.to_datetime(h9['fecha_hora_inicio']) - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
     
@@ -405,7 +395,7 @@ try:
                 st.subheader("Listado de Transiciones")
                 df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy()
                 tabla1 = pd.DataFrame({
-                    "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D') if not df_trans.empty else [],
+                    "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_trans.empty else [],
                     "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo'] if not df_trans.empty else []
                 })
                 if tabla1.empty: tabla1 = pd.DataFrame(columns=["Fecha", "Transición (Pozo/Etapa)"])
@@ -415,7 +405,7 @@ try:
                 st.subheader("Etapas que lograron CP")
                 df_logrados = df_c1_h9[df_c1_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5].copy()
                 tabla2 = pd.DataFrame({
-                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D') if not df_logrados.empty else [],
+                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_logrados.empty else [],
                     "Pozo": df_logrados['nombre_pozo'] if not df_logrados.empty else [],
                     "Etapa Nro": df_logrados['nro_etapa'].fillna(0).astype(int) if not df_logrados.empty else [],
                     "Secuencia Diaria": df_logrados['secuencia_diaria'].fillna(0).astype(int) if not df_logrados.empty else []
