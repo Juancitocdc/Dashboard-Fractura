@@ -18,7 +18,6 @@ import json
 # ==========================================
 st.set_page_config(page_title="Dashboard de Fractura", layout="wide", initial_sidebar_state="expanded")
 
-# --- SISTEMA DE ACCESO POR PIN ---
 PIN_OPERATIVO = "FRAC2026" # <--- CAMBIÁ EL PIN ACÁ
 
 if "acceso_concedido" not in st.session_state:
@@ -48,11 +47,11 @@ PARAMETROS_STD = {
     "Default": {"Etapas_Dia_STD": 7.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0}
 }
 
+URL_DEL_EXCEL = "https://docs.google.com/spreadsheets/d/1ExsBgW_v9w5k_Yve19650zqBAdPA4jUH/export?format=xlsx"
+
 # ==========================================
 # DESCARGA SEGURA Y PROCESAMIENTO
 # ==========================================
-URL_DEL_EXCEL = "https://docs.google.com/spreadsheets/d/1ExsBgW_v9w5k_Yve19650zqBAdPA4jUH/export?format=xlsx"
-
 @st.cache_data(ttl=600) 
 def cargar_datos_desde_google(url):
     credenciales_dict = json.loads(st.secrets["gcp_json"])
@@ -85,43 +84,62 @@ def cargar_datos_desde_google(url):
     h8.columns = h8.columns.str.strip()
     h9.columns = h9.columns.str.strip()
 
-    # Función MAGICA que resuelve celdas combinadas y formatos raros de Excel
-    def parse_and_ffill_date(serie):
+    # ---> FUNCIÓN MÁGICA MEJORADA (Sirve para Fechas y para Horas) <---
+    def parse_date_robust(serie, arrastrar=False, mantener_hora=False):
         if serie is None or serie.empty:
             return pd.Series(pd.NaT, index=serie.index if hasattr(serie, 'index') else None)
+        
+        # 1. Intenta leer como texto normal
         res = pd.to_datetime(serie, errors='coerce', dayfirst=True)
+        
+        # 2. Si falló, rescata los números ocultos de Excel
         mask_nat = res.isna() & serie.notna()
         if mask_nat.any():
             try:
                 num_val = pd.to_numeric(serie[mask_nat], errors='coerce')
-                res[mask_nat] = pd.to_datetime(num_val, unit='D', origin='1899-12-30', errors='coerce')
-            except:
+                res.loc[mask_nat] = pd.to_datetime(num_val, unit='D', origin='1899-12-30', errors='coerce')
+            except Exception:
                 pass
-        # ffill() arrastra la fecha hacia abajo cubriendo las celdas vacías de Excel
-        return res.ffill().dt.normalize()
+                
+        # 3. Arrastra la fecha a las celdas vacías de abajo (solo para fecha_reporte)
+        if arrastrar:
+            res = res.ffill()
+            
+        # 4. Limpia la hora si es solo fecha, o la respeta si es para el Gantt
+        if not mantener_hora:
+            res = res.dt.normalize()
+            
+        return res
 
-    # 2. Aplicar parseo con arrastre a las fechas de reporte
-    if 'fecha_reporte' in h2.columns: h2['fecha_reporte'] = parse_and_ffill_date(h2['fecha_reporte'])
-    if 'fecha_fin' in h2.columns: h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce', dayfirst=True)
+    # 2. Aplicamos la función a TODO
+    if 'fecha_reporte' in h2.columns: h2['fecha_reporte'] = parse_date_robust(h2['fecha_reporte'], arrastrar=True, mantener_hora=False)
+    if 'fecha_fin' in h2.columns: h2['fecha_fin'] = parse_date_robust(h2['fecha_fin'], arrastrar=False, mantener_hora=True)
     
-    if 'fecha_reporte' in h4.columns: h4['fecha_reporte'] = parse_and_ffill_date(h4['fecha_reporte'])
-    if 'fecha reporte' in h8.columns: h8['fecha reporte'] = parse_and_ffill_date(h8['fecha reporte'])
+    if 'fecha_reporte' in h4.columns: h4['fecha_reporte'] = parse_date_robust(h4['fecha_reporte'], arrastrar=True, mantener_hora=False)
     
-    if 'fecha_reporte' in h9.columns: h9['fecha_reporte'] = parse_and_ffill_date(h9['fecha_reporte'])
+    # Manejo seguro para h8 (a veces tiene guion bajo, a veces espacio)
+    if 'fecha reporte' in h8.columns: h8['fecha reporte'] = parse_date_robust(h8['fecha reporte'], arrastrar=True, mantener_hora=False)
+    elif 'fecha_reporte' in h8.columns: h8['fecha_reporte'] = parse_date_robust(h8['fecha_reporte'], arrastrar=True, mantener_hora=False)
     
-    # Horas de inicio y fin NO se arrastran, cada etapa tiene la suya
-    if 'fecha_hora_inicio' in h9.columns: h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce', dayfirst=True)
-    if 'fecha_hora_fin' in h9.columns: h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce', dayfirst=True)
+    if 'fecha_reporte' in h9.columns: h9['fecha_reporte'] = parse_date_robust(h9['fecha_reporte'], arrastrar=True, mantener_hora=False)
+    
+    # ACÁ ESTÁ EL SECRETO DEL GANTT: Le decimos que NO borre la hora
+    if 'fecha_hora_inicio' in h9.columns: h9['fecha_hora_inicio'] = parse_date_robust(h9['fecha_hora_inicio'], arrastrar=False, mantener_hora=True)
+    if 'fecha_hora_fin' in h9.columns: h9['fecha_hora_fin'] = parse_date_robust(h9['fecha_hora_fin'], arrastrar=False, mantener_hora=True)
 
-    # 3. Mapeo de Yacimiento y PAD desde h2
+    # 3. Mapeo de Yacimiento y PAD
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
     if 'fecha_reporte' in h2.columns and not h2['fecha_reporte'].dropna().empty:
         mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
-        h8 = pd.merge(h8, mapa_ubicacion, left_on='fecha reporte', right_on='fecha_reporte', how='left')
+        
+        # Cruzar con cuidado
+        col_fecha_h8 = 'fecha reporte' if 'fecha reporte' in h8.columns else 'fecha_reporte'
+        if col_fecha_h8 in h8.columns:
+            h8 = pd.merge(h8, mapa_ubicacion, left_on=col_fecha_h8, right_on='fecha_reporte', how='left')
         h9 = pd.merge(h9, mapa_ubicacion, on='fecha_reporte', how='left')
     
-    yac_dominante = h2['Yacimiento'].dropna().mode()[0] if ('Yacimiento' in h2.columns and not h2['Yacimiento'].dropna().empty) else "Yacimiento_A"
-    pad_dominante = h2['PAD'].dropna().mode()[0] if ('PAD' in h2.columns and not h2['PAD'].dropna().empty) else "PAD_Default"
+    yac_dominante = h2['Yacimiento'].dropna().mode()[0] if ('Yacimiento' in h2.columns and not h2['Yacimiento'].dropna().empty) else "S/D"
+    pad_dominante = h2['PAD'].dropna().mode()[0] if ('PAD' in h2.columns and not h2['PAD'].dropna().empty) else "S/D"
 
     for df_target in [h8, h9]:
         if 'Yacimiento' in df_target.columns: df_target['Yacimiento'] = df_target['Yacimiento'].fillna(yac_dominante)
@@ -129,7 +147,7 @@ def cargar_datos_desde_google(url):
         if 'PAD' in df_target.columns: df_target['PAD'] = df_target['PAD'].fillna(pad_dominante)
         else: df_target['PAD'] = pad_dominante
 
-    # 4. Cruzar Hoja 9 con Hoja 4 para traer Pozo y Nro Etapa usando Secuencia Diaria
+    # 4. Normalizar secuencias y cruzar Pozo/Etapa
     if 'secuencia_diaria' in h4.columns: h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
     if 'secuencia_diaria' in h9.columns: h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
 
@@ -137,13 +155,10 @@ def cargar_datos_desde_google(url):
         h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
                       on=['fecha_reporte', 'secuencia_diaria'], how='left')
 
-    if 'nombre_pozo' not in h9.columns: h9['nombre_pozo'] = "Pozo S/D"
-    else: h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
+    h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
+    if 'nro_etapa' in h9.columns: h9['nro_etapa'] = h9['nro_etapa'].fillna(0)
 
-    if 'nro_etapa' not in h9.columns: h9['nro_etapa'] = 0
-    else: h9['nro_etapa'] = h9['nro_etapa'].fillna(0)
-
-    # Creamos fecha_reporte_cp segura (si no hay hora de inicio, hereda fecha_reporte)
+    # 5. Generar fecha_reporte_cp sin inventar datos
     h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
     h9['fecha_reporte_cp'] = h9['fecha_reporte_cp'].fillna(h9['fecha_reporte'].dt.date)
     
@@ -179,7 +194,6 @@ try:
     if seccion == "⏳ Sección 1: Tiempos":
         st.title("⏳ Control Operativo de Tiempos y NPT")
         
-        st.markdown("### Filtros de Visualización")
         col_f1, col_f2 = st.columns(2)
         with col_f1: toggle_npt = st.radio("Inclusión de NPT:", ["Sin NPT", "Con NPT"], horizontal=True)
         with col_f2: toggle_unidad = st.radio("Unidad de Medida:", ["min", "hrs"], horizontal=True)
@@ -196,7 +210,8 @@ try:
             if not pads_disp: pads_disp = ["S/D"]
             with col_s2: sel_pad_t1 = st.selectbox("Seleccionar PAD (P1):", pads_disp)
             
-            df_t1 = df_h8[(df_h8['Yacimiento'] == sel_yac_t1) & (df_h8['PAD'] == sel_pad_t1)].sort_values('fecha reporte').copy()
+            col_fecha_h8 = 'fecha reporte' if 'fecha reporte' in df_h8.columns else 'fecha_reporte'
+            df_t1 = df_h8[(df_h8['Yacimiento'] == sel_yac_t1) & (df_h8['PAD'] == sel_pad_t1)].sort_values(col_fecha_h8).copy()
             
             suf_npt = "Con NPT" if toggle_npt == "Con NPT" else "Sin NPT"
             suf_und = toggle_unidad 
@@ -215,7 +230,7 @@ try:
             st.subheader(f"Cuadro 1 - Tiempos Operativos ({suf_und}) - {sel_pad_t1}")
             try:
                 cuadro1 = pd.DataFrame({
-                    "Fecha de Reporte": pd.to_datetime(df_t1['fecha reporte']).dt.strftime('%d/%m/%Y'),
+                    "Fecha de Reporte": pd.to_datetime(df_t1[col_fecha_h8]).dt.strftime('%d/%m/%Y'),
                     "Cant. Etapas": df_t1['cantidad etapas'].fillna(0).astype(int),
                     "Setupf": df_t1[f'SETUPF {suf_npt} {suf_und}'].fillna(0).round(2),
                     "Setupf Prom 24hs": (df_t1[f'Promedio SETUPF {suf_npt} min'].fillna(0) / factor_div).round(2),
@@ -232,23 +247,26 @@ try:
                 st.warning(f"⚠️ Hubo un problema encontrando la columna: {e}")
 
             st.subheader(f"Cuadro 2 - Desglose de NPT ({sel_pad_t1})")
-            cuadro2 = pd.DataFrame({
-                "Fecha de Reporte": pd.to_datetime(df_t1['fecha reporte']).dt.strftime('%d/%m/%Y'),
-                "Cant. Etapas": df_t1['cantidad etapas'].fillna(0).astype(int),
-                "NPT Total": (df_t1['NPT Total min'] / factor_div).fillna(0).round(2),
-                "NPT Prom 24hs": (df_t1['NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                "NPT Prom PAD": (prom_pad_npt_total.fillna(0) / factor_div).round(2),
-                "NPT Setupf": (df_t1['SETUPF NPT min'] / factor_div).fillna(0).round(2),
-                "NPT Setupf Prom 24hs": (df_t1['SETUPF NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                "NPT Setupf Prom PAD": (prom_pad_npt_setupf.fillna(0) / factor_div).round(2),
-                "NPT Ramp": (df_t1['RAMP NPT min'] / factor_div).fillna(0).round(2),
-                "NPT Ramp Prom 24hs": (df_t1['RAMP NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                "NPT Ramp Prom PAD": (prom_pad_npt_ramp.fillna(0) / factor_div).round(2),
-                "NPT Frac": (df_t1['FRAC NPT min'] / factor_div).fillna(0).round(2),
-                "NPT Frac Prom 24hs": (df_t1['FRAC NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                "NPT Frac Prom PAD": (prom_pad_npt_frac.fillna(0) / factor_div).round(2)
-            })
-            st.dataframe(cuadro2, use_container_width=True, hide_index=True)
+            try:
+                cuadro2 = pd.DataFrame({
+                    "Fecha de Reporte": pd.to_datetime(df_t1[col_fecha_h8]).dt.strftime('%d/%m/%Y'),
+                    "Cant. Etapas": df_t1['cantidad etapas'].fillna(0).astype(int),
+                    "NPT Total": (df_t1['NPT Total min'] / factor_div).fillna(0).round(2),
+                    "NPT Prom 24hs": (df_t1['NPT Promedio (min)'] / factor_div).fillna(0).round(2),
+                    "NPT Prom PAD": (prom_pad_npt_total.fillna(0) / factor_div).round(2),
+                    "NPT Setupf": (df_t1['SETUPF NPT min'] / factor_div).fillna(0).round(2),
+                    "NPT Setupf Prom 24hs": (df_t1['SETUPF NPT Promedio (min)'] / factor_div).fillna(0).round(2),
+                    "NPT Setupf Prom PAD": (prom_pad_npt_setupf.fillna(0) / factor_div).round(2),
+                    "NPT Ramp": (df_t1['RAMP NPT min'] / factor_div).fillna(0).round(2),
+                    "NPT Ramp Prom 24hs": (df_t1['RAMP NPT Promedio (min)'] / factor_div).fillna(0).round(2),
+                    "NPT Ramp Prom PAD": (prom_pad_npt_ramp.fillna(0) / factor_div).round(2),
+                    "NPT Frac": (df_t1['FRAC NPT min'] / factor_div).fillna(0).round(2),
+                    "NPT Frac Prom 24hs": (df_t1['FRAC NPT Promedio (min)'] / factor_div).fillna(0).round(2),
+                    "NPT Frac Prom PAD": (prom_pad_npt_frac.fillna(0) / factor_div).round(2)
+                })
+                st.dataframe(cuadro2, use_container_width=True, hide_index=True)
+            except KeyError as e:
+                pass
 
         with tab2:
             col_m1, col_m2 = st.columns(2)
@@ -348,17 +366,18 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                datos_cp.append({
-                    "Fecha Reporte": pd.to_datetime(fecha).strftime('%d/%m/%Y'),
-                    "Etapas Acum.": acum_etapas_fin,
-                    "Etapas Día": etapas_dia,
-                    "CP Logrados": cp_dia,
-                    "% CP (Día)": f"{pct_cp_dia:.1f}%",
-                    "% CP (PAD)": f"{pct_cp_pad:.1f}%",
-                    "Etapas STD": std_yac,
-                    "Etapas/Día (Real)": round(etapas_por_dia_real, 2),
-                    "Etapas Posibles CP (Acum-4)": posibles_acum_hoy
-                })
+                if etapas_dia > 0 or cp_dia > 0:
+                    datos_cp.append({
+                        "Fecha Reporte": pd.to_datetime(fecha).strftime('%d/%m/%Y'),
+                        "Etapas Acum.": acum_etapas_fin,
+                        "Etapas Día": etapas_dia,
+                        "CP Logrados": cp_dia,
+                        "% CP (Día)": f"{pct_cp_dia:.1f}%",
+                        "% CP (PAD)": f"{pct_cp_pad:.1f}%",
+                        "Etapas STD": std_yac,
+                        "Etapas/Día (Real)": round(etapas_por_dia_real, 2),
+                        "Etapas Posibles CP (Acum-4)": posibles_acum_hoy
+                    })
                 
                 posibles_acum_ayer = posibles_acum_hoy
                 
@@ -368,7 +387,6 @@ try:
             
             st.subheader("Línea de Tiempo (Gantt) - FRAC & CP")
             
-            # Filtramos para el Gantt SOLO las etapas que sí tienen fecha de inicio cargada en Excel
             df_gantt = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
             
             if not df_gantt.empty:
