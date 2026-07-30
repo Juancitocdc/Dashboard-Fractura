@@ -88,11 +88,17 @@ def cargar_datos_desde_google(url):
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs')
     h9 = pd.read_excel(archivo_excel, sheet_name='9_Revision_Continuous_Pumping')
     
-    # ---> SOLUCIÓN: ESTANDARIZAR FECHAS ANTES DE CRUZAR <---
+    # ---> SOLUCIÓN: LIMPIAR FECHAS Y HASHTAGS DE EXCEL <---
     h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce')
+    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce')
+    
     h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce')
+    
     h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce')
+    
     h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce')
+    h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce')
+    h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce')
     # --------------------------------------------------------
 
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
@@ -104,7 +110,7 @@ def cargar_datos_desde_google(url):
     h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
                   on=['fecha_reporte', 'secuencia_diaria'], how='left')
                   
-    h9['fecha_reporte_cp'] = (pd.to_datetime(h9['fecha_hora_inicio']) - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
+    h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
     
     return h2, h8, h9
 
@@ -126,7 +132,7 @@ try:
     zona_ar = pytz.timezone('America/Argentina/Buenos_Aires')
     hora_actual = datetime.now(zona_ar).strftime("%d/%m/%Y %H:%M hs")
     
-    ultima_op = pd.to_datetime(df_h2['fecha_fin']).max()
+    ultima_op = pd.to_datetime(df_h2['fecha_fin'], errors='coerce').max()
     hora_op = ultima_op.strftime("%d/%m/%Y %H:%M hs") if pd.notnull(ultima_op) else "Sin datos"
     
     st.sidebar.success(f"✅ Sincronizado:\n{hora_actual}")
