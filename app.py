@@ -88,15 +88,16 @@ def cargar_datos_desde_google(url):
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs')
     h9 = pd.read_excel(archivo_excel, sheet_name='9_Revision_Continuous_Pumping')
     
-    # ---> SOLUCIÓN: LIMPIAR FECHAS Y HASHTAGS DE EXCEL <---
-    h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce')
-    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce')
+    # ---> SOLUCIÓN: NORMALIZAR FECHAS (ELIMINAR HORAS OCULTAS) <---
+    # .dt.normalize() fuerza a que todo sea "Año-Mes-Día 00:00:00" para que los cruces no fallen
+    h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce').dt.normalize()
+    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce') # Esta sí necesita la hora intacta
     
-    h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce')
+    h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce').dt.normalize()
     
-    h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce')
+    h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce').dt.normalize()
     
-    h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce')
+    h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce').dt.normalize()
     h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce')
     h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce')
     # --------------------------------------------------------
@@ -107,6 +108,7 @@ def cargar_datos_desde_google(url):
     h8 = pd.merge(h8, mapa_ubicacion, left_on='fecha reporte', right_on='fecha_reporte', how='left')
     h9 = pd.merge(h9, mapa_ubicacion, on='fecha_reporte', how='left')
     
+    # Cruzamos Pozo y Etapa (ahora las fechas coinciden 100% seguro)
     h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
                   on=['fecha_reporte', 'secuencia_diaria'], how='left')
                   
