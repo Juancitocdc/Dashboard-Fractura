@@ -4,3 +4,5 @@ numpy
 plotly
 openpyxl
 pytz
+requests
+google-auth
