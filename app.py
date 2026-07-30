@@ -88,6 +88,13 @@ def cargar_datos_desde_google(url):
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs')
     h9 = pd.read_excel(archivo_excel, sheet_name='9_Revision_Continuous_Pumping')
     
+    # ---> SOLUCIÓN: ESTANDARIZAR FECHAS ANTES DE CRUZAR <---
+    h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce')
+    h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce')
+    h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce')
+    h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce')
+    # --------------------------------------------------------
+
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
     mapa_ubicacion = h2.groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
     
