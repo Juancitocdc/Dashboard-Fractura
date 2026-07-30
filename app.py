@@ -273,6 +273,7 @@ try:
             st.dataframe(pd.DataFrame(resumen_macro), use_container_width=True, hide_index=True)
 
     # ==========================================
+    # ==========================================
     # SECCIÓN 2: CONTINUOUS PUMPING
     # ==========================================
     elif seccion == "🔄 Sección 2: Continuous Pumping":
@@ -297,7 +298,10 @@ try:
             
             st.subheader(f"Cuadro 1 - Evolución CP ({sel_pad_c1})")
             
-            fechas_pad = sorted(list(set(df_c1_h9['fecha_reporte'].dropna()) | set(df_c1_h9['fecha_reporte_cp'].dropna())))
+            # --- BLINDAJE CONTRA FECHAS VACÍAS (NaT) ---
+            todas_las_fechas = set(df_c1_h9['fecha_reporte'].dropna()) | set(df_c1_h9['fecha_reporte_cp'].dropna())
+            fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) # <--- Filtra los NaT
+            
             std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
             
             datos_cp = []
@@ -351,15 +355,19 @@ try:
             df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Logró CP)', 'FRAC (Sin CP)')
             df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
             
-            fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
-                              color="Tipo_FRAC",
-                              color_discrete_map={"FRAC (Logró CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
-                              hover_data=["Etapa Nro"])
-            
-            fig.update_layout(barmode='overlay', legend_title_text="Telemetría de Bombeo")
-            fig.update_yaxes(autorange="reversed", type='category')
-            
-            st.plotly_chart(fig, use_container_width=True)
+            # --- BLINDAJE DEL GANTT ---
+            if not df_gantt.empty:
+                fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
+                                  color="Tipo_FRAC",
+                                  color_discrete_map={"FRAC (Logró CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
+                                  hover_data=["Etapa Nro"])
+                
+                fig.update_layout(barmode='overlay', legend_title_text="Telemetría de Bombeo")
+                fig.update_yaxes(autorange="reversed", type='category')
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("⚠️ No hay datos de tiempo suficientes para dibujar el diagrama de Gantt en este PAD.")
             
             col_t1, col_t2 = st.columns(2)
             
@@ -367,7 +375,7 @@ try:
                 st.subheader("Listado de Transiciones")
                 df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy()
                 tabla1 = pd.DataFrame({
-                    "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y'),
+                    "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D'),
                     "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo']
                 })
                 st.dataframe(tabla1, use_container_width=True, hide_index=True)
@@ -376,7 +384,7 @@ try:
                 st.subheader("Etapas que lograron CP")
                 df_logrados = df_c1_h9[df_c1_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5].copy()
                 tabla2 = pd.DataFrame({
-                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y'),
+                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y').fillna('S/D'),
                     "Pozo": df_logrados['nombre_pozo'],
                     "Etapa Nro": df_logrados['nro_etapa'].fillna(0).astype(int),
                     "Secuencia Diaria": df_logrados['secuencia_diaria'].fillna(0).astype(int)
@@ -398,7 +406,10 @@ try:
                 
                 yac = df_pad_h9['Yacimiento'].iloc[0]
                 std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
-                ultima_fecha = pd.to_datetime(df_pad_h9['fecha_reporte'].max()).strftime('%d/%m/%Y')
+                
+                # --- BLINDAJE DE ÚLTIMA FECHA ---
+                max_fecha = df_pad_h9['fecha_reporte'].max()
+                ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
                 
                 etapas_totales = len(df_pad_h9)
                 cp_totales = (df_pad_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5).sum()
@@ -425,4 +436,4 @@ try:
             st.dataframe(pd.DataFrame(resumen_cp), use_container_width=True, hide_index=True)
 
 except Exception as e:
-    st.error(f"❌ Ocurrió un error al cargar la base de datos. Verifica tu conexión o el JSON. Detalles: {e}")
+    st.error(f"❌ Ocurrió un error al procesar el tablero. Detalles: {e}")
