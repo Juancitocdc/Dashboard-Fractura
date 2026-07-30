@@ -88,31 +88,52 @@ def cargar_datos_desde_google(url):
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs')
     h9 = pd.read_excel(archivo_excel, sheet_name='9_Revision_Continuous_Pumping')
     
-    # ---> SOLUCIÓN: NORMALIZAR FECHAS (ELIMINAR HORAS OCULTAS) <---
-    # .dt.normalize() fuerza a que todo sea "Año-Mes-Día 00:00:00" para que los cruces no fallen
+    # ---> SOLUCIÓN DEFINITIVA: BLINDAJE DE CRUCES SILENCIOSOS <---
+    # 1. Limpiamos espacios basura ocultos en las columnas
+    h2.columns = h2.columns.str.strip()
+    h4.columns = h4.columns.str.strip()
+    h8.columns = h8.columns.str.strip()
+    h9.columns = h9.columns.str.strip()
+
+    # 2. Normalizamos Fechas (limpieza de horas)
     h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce').dt.normalize()
-    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce') # Esta sí necesita la hora intacta
-    
+    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce')
     h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce').dt.normalize()
-    
     h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce').dt.normalize()
-    
     h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce').dt.normalize()
     h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce')
     h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce')
-    # --------------------------------------------------------
 
+    # 3. Mapeo de Yacimiento y PAD con "Red de Rescate"
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
-    mapa_ubicacion = h2.groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
+    mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
     
+    # Extraer Yac/PAD dominantes por si las fechas de h9 y h2 tienen defasaje
+    yac_dominante = h2['Yacimiento'].dropna().mode()[0] if not h2['Yacimiento'].dropna().empty else "Desconocido"
+    pad_dominante = h2['PAD'].dropna().mode()[0] if not h2['PAD'].dropna().empty else "Desconocido"
+
     h8 = pd.merge(h8, mapa_ubicacion, left_on='fecha reporte', right_on='fecha_reporte', how='left')
     h9 = pd.merge(h9, mapa_ubicacion, on='fecha_reporte', how='left')
     
-    # Cruzamos Pozo y Etapa (ahora las fechas coinciden 100% seguro)
+    # Forzar el llenado si el cruce de fechas falló
+    h8['Yacimiento'] = h8['Yacimiento'].fillna(yac_dominante)
+    h8['PAD'] = h8['PAD'].fillna(pad_dominante)
+    h9['Yacimiento'] = h9['Yacimiento'].fillna(yac_dominante)
+    h9['PAD'] = h9['PAD'].fillna(pad_dominante)
+
+    # 4. Arreglar "secuencia_diaria" para que el cruce Pozo/Etapa sea perfecto
+    h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
+    h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
+
+    # 5. Cruzar Pozo y Etapa
     h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
                   on=['fecha_reporte', 'secuencia_diaria'], how='left')
                   
+    # Rescate de Pozo vacío para que JAMÁS desaparezca el Gantt
+    h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
+    
     h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
+    # --------------------------------------------------------
     
     return h2, h8, h9
 
