@@ -74,7 +74,7 @@ def cargar_datos_desde_google(url):
         
     archivo_excel = io.BytesIO(respuesta.content)
     
-    # 1. Cargamos las hojas eliminando filas totalmente vacías
+    # 1. Cargamos las hojas
     h2 = pd.read_excel(archivo_excel, sheet_name='2_Base_Mapeada_Tiempos').dropna(how='all')
     h4 = pd.read_excel(archivo_excel, sheet_name='4_Detalle_Tiempos_Bombeo').dropna(how='all')
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs').dropna(how='all')
@@ -85,8 +85,8 @@ def cargar_datos_desde_google(url):
     h8.columns = h8.columns.str.strip()
     h9.columns = h9.columns.str.strip()
 
-    # Función robusta para parsear fechas de Excel
-    def parse_date_robust(serie):
+    # Función MAGICA que resuelve celdas combinadas y formatos raros de Excel
+    def parse_and_ffill_date(serie):
         if serie is None or serie.empty:
             return pd.Series(pd.NaT, index=serie.index if hasattr(serie, 'index') else None)
         res = pd.to_datetime(serie, errors='coerce', dayfirst=True)
@@ -97,16 +97,19 @@ def cargar_datos_desde_google(url):
                 res[mask_nat] = pd.to_datetime(num_val, unit='D', origin='1899-12-30', errors='coerce')
             except:
                 pass
-        return res.dt.normalize()
+        # ffill() arrastra la fecha hacia abajo cubriendo las celdas vacías de Excel
+        return res.ffill().dt.normalize()
 
-    # 2. Limpieza de fechas
-    if 'fecha_reporte' in h2.columns: h2['fecha_reporte'] = parse_date_robust(h2['fecha_reporte'])
+    # 2. Aplicar parseo con arrastre a las fechas de reporte
+    if 'fecha_reporte' in h2.columns: h2['fecha_reporte'] = parse_and_ffill_date(h2['fecha_reporte'])
     if 'fecha_fin' in h2.columns: h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce', dayfirst=True)
     
-    if 'fecha_reporte' in h4.columns: h4['fecha_reporte'] = parse_date_robust(h4['fecha_reporte'])
-    if 'fecha reporte' in h8.columns: h8['fecha reporte'] = parse_date_robust(h8['fecha reporte'])
+    if 'fecha_reporte' in h4.columns: h4['fecha_reporte'] = parse_and_ffill_date(h4['fecha_reporte'])
+    if 'fecha reporte' in h8.columns: h8['fecha reporte'] = parse_and_ffill_date(h8['fecha reporte'])
     
-    if 'fecha_reporte' in h9.columns: h9['fecha_reporte'] = parse_date_robust(h9['fecha_reporte'])
+    if 'fecha_reporte' in h9.columns: h9['fecha_reporte'] = parse_and_ffill_date(h9['fecha_reporte'])
+    
+    # Horas de inicio y fin NO se arrastran, cada etapa tiene la suya
     if 'fecha_hora_inicio' in h9.columns: h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce', dayfirst=True)
     if 'fecha_hora_fin' in h9.columns: h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce', dayfirst=True)
 
@@ -126,25 +129,13 @@ def cargar_datos_desde_google(url):
         if 'PAD' in df_target.columns: df_target['PAD'] = df_target['PAD'].fillna(pad_dominante)
         else: df_target['PAD'] = pad_dominante
 
-    # 4. Normalizar secuencias numéricas
-    if 'secuencia_diaria' in h4.columns:
-        h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
-    if 'secuencia_diaria' in h9.columns:
-        h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
+    # 4. Cruzar Hoja 9 con Hoja 4 para traer Pozo y Nro Etapa usando Secuencia Diaria
+    if 'secuencia_diaria' in h4.columns: h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
+    if 'secuencia_diaria' in h9.columns: h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
 
-    # 5. Cruce robusto con la Hoja 4 para traer Pozo y Etapa reales
     if 'secuencia_diaria' in h9.columns and 'secuencia_diaria' in h4.columns:
-        h4_subset = h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']].copy()
-        h9 = pd.merge(h9, h4_subset, on=['fecha_reporte', 'secuencia_diaria'], how='left', suffixes=('', '_h4'))
-        
-        missing_pozo = h9['nombre_pozo'].isna() if 'nombre_pozo' in h9.columns else pd.Series(True, index=h9.index)
-        if missing_pozo.any():
-            h4_sec_only = h4_subset.drop(columns=['fecha_reporte']).drop_duplicates(subset=['secuencia_diaria'])
-            h9 = pd.merge(h9, h4_sec_only, on='secuencia_diaria', how='left', suffixes=('', '_sec'))
-            if 'nombre_pozo_sec' in h9.columns and 'nombre_pozo' in h9.columns:
-                h9['nombre_pozo'] = h9['nombre_pozo'].fillna(h9['nombre_pozo_sec'])
-            if 'nro_etapa_sec' in h9.columns and 'nro_etapa' in h9.columns:
-                h9['nro_etapa'] = h9['nro_etapa'].fillna(h9['nro_etapa_sec'])
+        h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
+                      on=['fecha_reporte', 'secuencia_diaria'], how='left')
 
     if 'nombre_pozo' not in h9.columns: h9['nombre_pozo'] = "Pozo S/D"
     else: h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
@@ -152,10 +143,9 @@ def cargar_datos_desde_google(url):
     if 'nro_etapa' not in h9.columns: h9['nro_etapa'] = 0
     else: h9['nro_etapa'] = h9['nro_etapa'].fillna(0)
 
-    # ---> FILTRO ESTRICTO: Descartamos filas sin fechas o tiempos reales (Cero inventos) <---
-    h9.dropna(subset=['fecha_reporte', 'fecha_hora_inicio', 'fecha_hora_fin'], inplace=True)
-
-    h9['fecha_reporte_cp'] = (pd.to_datetime(h9['fecha_hora_inicio']) - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
+    # Creamos fecha_reporte_cp segura (si no hay hora de inicio, hereda fecha_reporte)
+    h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
+    h9['fecha_reporte_cp'] = h9['fecha_reporte_cp'].fillna(h9['fecha_reporte'].dt.date)
     
     return h2, h8, h9
 
@@ -309,7 +299,7 @@ try:
             if not pads_disp: pads_disp = ["S/D"]
             with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp)
             
-            df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].sort_values('fecha_hora_inicio').copy()
+            df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].sort_values('fecha_reporte').copy()
             df_c1_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
             df_c1_h9['fecha_reporte'] = pd.to_datetime(df_c1_h9['fecha_reporte']).dt.date
@@ -335,8 +325,15 @@ try:
                 df_dia_h9_inicio = df_c1_h9[df_c1_h9['fecha_reporte_cp'] == fecha]
                 
                 etapas_dia = len(df_dia_h9_fin)
-                cp_dia = (df_dia_h9_inicio['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5).sum() 
-                minutos_dia = df_dia_h2['duracion_minutos'].sum()
+                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_dia_h9_inicio.columns:
+                    cp_dia = (pd.to_numeric(df_dia_h9_inicio['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5).sum() 
+                else:
+                    cp_dia = 0
+
+                if 'duracion_minutos' in df_dia_h2.columns:
+                    minutos_dia = pd.to_numeric(df_dia_h2['duracion_minutos'], errors='coerce').sum()
+                else:
+                    minutos_dia = 0
                 
                 acum_etapas_fin += etapas_dia
                 acum_cp += cp_dia
@@ -371,12 +368,18 @@ try:
             
             st.subheader("Línea de Tiempo (Gantt) - FRAC & CP")
             
+            # Filtramos para el Gantt SOLO las etapas que sí tienen fecha de inicio cargada en Excel
             df_gantt = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
-            df_gantt['Es_CP'] = df_gantt['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5
-            df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Logró CP)', 'FRAC (Sin CP)')
-            df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
             
             if not df_gantt.empty:
+                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_gantt.columns:
+                    df_gantt['Es_CP'] = pd.to_numeric(df_gantt['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5
+                else:
+                    df_gantt['Es_CP'] = False
+                    
+                df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Logró CP)', 'FRAC (Sin CP)')
+                df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
+                
                 fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
                                   color="Tipo_FRAC",
                                   color_discrete_map={"FRAC (Logró CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
@@ -387,13 +390,17 @@ try:
                 
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("⚠️ No hay datos de tiempo suficientes para dibujar el diagrama de Gantt en este PAD.")
+                st.warning("⚠️ Todavía no hay datos de horario de bombeo cargados en el Excel para dibujar el diagrama de Gantt en este PAD.")
             
             col_t1, col_t2 = st.columns(2)
             
             with col_t1:
                 st.subheader("Listado de Transiciones")
-                df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy()
+                if 'transicion_cp_con_nueva_logica_chequeo' in df_c1_h9.columns:
+                    df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy()
+                else:
+                    df_trans = pd.DataFrame()
+                    
                 tabla1 = pd.DataFrame({
                     "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_trans.empty else [],
                     "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo'] if not df_trans.empty else []
@@ -403,7 +410,11 @@ try:
 
             with col_t2:
                 st.subheader("Etapas que lograron CP")
-                df_logrados = df_c1_h9[df_c1_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5].copy()
+                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_c1_h9.columns:
+                    df_logrados = df_c1_h9[pd.to_numeric(df_c1_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5].copy()
+                else:
+                    df_logrados = pd.DataFrame()
+                    
                 tabla2 = pd.DataFrame({
                     "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_logrados.empty else [],
                     "Pozo": df_logrados['nombre_pozo'] if not df_logrados.empty else [],
@@ -433,8 +444,15 @@ try:
                 ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
                 
                 etapas_totales = len(df_pad_h9)
-                cp_totales = (df_pad_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5).sum()
-                minutos_totales = df_pad_h2['duracion_minutos'].sum()
+                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_pad_h9.columns:
+                    cp_totales = (pd.to_numeric(df_pad_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5).sum()
+                else:
+                    cp_totales = 0
+                    
+                if 'duracion_minutos' in df_pad_h2.columns:
+                    minutos_totales = pd.to_numeric(df_pad_h2['duracion_minutos'], errors='coerce').sum()
+                else:
+                    minutos_totales = 0
                 
                 etapas_posibles = max(0, etapas_totales - 4)
                 pct_cp_final = (cp_totales / etapas_posibles * 100) if etapas_posibles > 0 else 0
