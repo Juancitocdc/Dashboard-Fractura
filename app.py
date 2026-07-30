@@ -74,7 +74,7 @@ def cargar_datos_desde_google(url):
         
     archivo_excel = io.BytesIO(respuesta.content)
     
-    # 4. Procesamos los datos (Limpieza segura sin borrar filas enteras)
+    # 1. Cargamos las hojas
     h2 = pd.read_excel(archivo_excel, sheet_name='2_Base_Mapeada_Tiempos').dropna(how='all')
     h4 = pd.read_excel(archivo_excel, sheet_name='4_Detalle_Tiempos_Bombeo').dropna(how='all')
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs').dropna(how='all')
@@ -85,7 +85,7 @@ def cargar_datos_desde_google(url):
     h8.columns = h8.columns.str.strip()
     h9.columns = h9.columns.str.strip()
 
-    # Normalizamos Fechas y forzamos lectura LatAm (Día/Mes/Año)
+    # 2. Limpieza de fechas
     h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
     h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce', dayfirst=True)
     h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
@@ -94,8 +94,7 @@ def cargar_datos_desde_google(url):
     h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce', dayfirst=True)
     h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce', dayfirst=True)
 
-    # (Acá eliminamos el filtro destructivo)
-
+    # 3. Mapeo de Yacimiento y PAD
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
     mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
     
@@ -110,13 +109,24 @@ def cargar_datos_desde_google(url):
     h9['Yacimiento'] = h9['Yacimiento'].fillna(yac_dominante)
     h9['PAD'] = h9['PAD'].fillna(pad_dominante)
 
+    # 4. Normalizar secuencias numéricas
     h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
     h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
 
+    # 5. Cruzar con la Hoja 4 para traer Pozo, Etapa y ASEGURAR LA FECHA CORRECTA
     h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
-                  on=['fecha_reporte', 'secuencia_diaria'], how='left')
+                  on=['fecha_reporte', 'secuencia_diaria'], how='left', suffixes=('', '_h4'))
                   
+    # ---> RESCATE DE FECHA: Si h9 vino sin fecha, le inyectamos la fecha limpia de h4 <---
+    if 'fecha_reporte_h4' in h9.columns:
+        h9['fecha_reporte'] = h9['fecha_reporte'].fillna(h9['fecha_reporte_h4'])
+
     h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
+    
+    # Si las horas de inicio/fin no vinieron, las estimamos en base a la fecha de reporte para que el Gantt no explote
+    h9['fecha_hora_inicio'] = h9['fecha_hora_inicio'].fillna(pd.to_datetime(h9['fecha_reporte']))
+    h9['fecha_hora_fin'] = h9['fecha_hora_fin'].fillna(h9['fecha_hora_inicio'] + pd.Timedelta(hours=2))
+
     h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
     
     return h2, h8, h9
