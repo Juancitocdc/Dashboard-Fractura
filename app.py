@@ -74,7 +74,7 @@ def cargar_datos_desde_google(url):
         
     archivo_excel = io.BytesIO(respuesta.content)
     
-    # 4. Procesamos los datos y ELIMINAMOS FILAS FANTASMA
+    # 4. Procesamos los datos (Limpieza segura sin borrar filas enteras)
     h2 = pd.read_excel(archivo_excel, sheet_name='2_Base_Mapeada_Tiempos').dropna(how='all')
     h4 = pd.read_excel(archivo_excel, sheet_name='4_Detalle_Tiempos_Bombeo').dropna(how='all')
     h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs').dropna(how='all')
@@ -85,17 +85,16 @@ def cargar_datos_desde_google(url):
     h8.columns = h8.columns.str.strip()
     h9.columns = h9.columns.str.strip()
 
-    # Normalizamos Fechas
-    h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce').dt.normalize()
-    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce')
-    h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce').dt.normalize()
-    h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce').dt.normalize()
-    h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce').dt.normalize()
-    h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce')
-    h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce')
+    # Normalizamos Fechas y forzamos lectura LatAm (Día/Mes/Año)
+    h2['fecha_reporte'] = pd.to_datetime(h2['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
+    h2['fecha_fin'] = pd.to_datetime(h2['fecha_fin'], errors='coerce', dayfirst=True)
+    h4['fecha_reporte'] = pd.to_datetime(h4['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
+    h8['fecha reporte'] = pd.to_datetime(h8['fecha reporte'], errors='coerce', dayfirst=True).dt.normalize()
+    h9['fecha_reporte'] = pd.to_datetime(h9['fecha_reporte'], errors='coerce', dayfirst=True).dt.normalize()
+    h9['fecha_hora_inicio'] = pd.to_datetime(h9['fecha_hora_inicio'], errors='coerce', dayfirst=True)
+    h9['fecha_hora_fin'] = pd.to_datetime(h9['fecha_hora_fin'], errors='coerce', dayfirst=True)
 
-    # ---> FILTRO DE HIERRO: Si no hay fecha de inicio, no es un bombeo real (chao fila fantasma) <---
-    h9.dropna(subset=['fecha_hora_inicio'], inplace=True)
+    # (Acá eliminamos el filtro destructivo)
 
     h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
     mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
