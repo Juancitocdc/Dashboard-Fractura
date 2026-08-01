@@ -1,4 +1,4 @@
-##### Codigo Web
+#### APP APB 
 
 
 import streamlit as st
@@ -16,7 +16,7 @@ import json
 # ==========================================
 # CONFIGURACIÓN DE LA PÁGINA Y SEGURIDAD
 # ==========================================
-st.set_page_config(page_title="Dashboard de Fractura", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Dashboard Operativo", layout="wide", initial_sidebar_state="expanded")
 
 PIN_OPERATIVO = "FRAC2026" # <--- CAMBIÁ EL PIN ACÁ
 
@@ -39,7 +39,7 @@ if not st.session_state["acceso_concedido"]:
     st.stop() 
 
 # ==========================================
-# PARÁMETROS STD
+# PARÁMETROS STD Y URLs
 # ==========================================
 PARAMETROS_STD = {
     "Yacimiento_A": {"Etapas_Dia_STD": 8.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0},
@@ -47,95 +47,292 @@ PARAMETROS_STD = {
     "Default": {"Etapas_Dia_STD": 7.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0}
 }
 
-URL_DEL_EXCEL = "https://docs.google.com/spreadsheets/d/1ExsBgW_v9w5k_Yve19650zqBAdPA4jUH/export?format=xlsx"
+URL_TIEMPOS = "https://docs.google.com/spreadsheets/d/171LD-isnq1p9M9_H8sPSZIG8_s9El2WC/export?format=xlsx"
+URL_CONTINUO = "https://docs.google.com/spreadsheets/d/1XHPj3S5RW8KRT4IquPREb5Cng3QtEU3C/export?format=xlsx"
 
 # ==========================================
-# DESCARGA SEGURA Y PROCESAMIENTO
+# MOTOR DE DESCARGA Y PROCESAMIENTO APB
 # ==========================================
-@st.cache_data(ttl=600) 
-def cargar_datos_desde_google(url):
+@st.cache_data(ttl=600, show_spinner=False)
+def descargar_y_procesar(url_tiempos, url_continuo):
+    # --- AUTENTICACIÓN GOOGLE ---
     credenciales_dict = json.loads(st.secrets["gcp_json"])
     credentials = service_account.Credentials.from_service_account_info(
         credenciales_dict,
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
     )
-    
     auth_req = google.auth.transport.requests.Request()
     credentials.refresh(auth_req)
     token = credentials.token
-    
     headers = {"Authorization": f"Bearer {token}"}
-    respuesta = requests.get(url, headers=headers)
     
-    if respuesta.status_code != 200:
-        st.error(f"Error descargando el archivo. Código: {respuesta.status_code}")
+    # --- DESCARGA DE ARCHIVOS ---
+    resp_t = requests.get(url_tiempos, headers=headers)
+    resp_c = requests.get(url_continuo, headers=headers)
+    
+    if resp_t.status_code != 200 or resp_c.status_code != 200:
+        st.error("❌ Error descargando los archivos base desde Google Drive. Verificá que el bot tenga permisos de Lector en ambos archivos.")
         st.stop()
         
-    archivo_excel = io.BytesIO(respuesta.content)
-    
-    # 1. Cargamos las hojas
-    h2 = pd.read_excel(archivo_excel, sheet_name='2_Base_Mapeada_Tiempos').dropna(how='all')
-    h4 = pd.read_excel(archivo_excel, sheet_name='4_Detalle_Tiempos_Bombeo').dropna(how='all')
-    h8 = pd.read_excel(archivo_excel, sheet_name='8_Comparativa_y_NPTs').dropna(how='all')
-    h9 = pd.read_excel(archivo_excel, sheet_name='9_Revision_Continuous_Pumping').dropna(how='all')
-    
-    h2.columns = h2.columns.str.strip()
-    h4.columns = h4.columns.str.strip()
-    h8.columns = h8.columns.str.strip()
-    h9.columns = h9.columns.str.strip()
+    file_tiempos = io.BytesIO(resp_t.content)
+    file_continuo = io.BytesIO(resp_c.content)
 
-    # ---> FUNCIÓN MÁGICA MEJORADA (Sirve para Fechas y para Horas) <---
-    def parse_date_robust(serie, arrastrar=False, mantener_hora=False):
-        if serie is None or serie.empty:
-            return pd.Series(pd.NaT, index=serie.index if hasattr(serie, 'index') else None)
+    # ---------------------------------------------------------
+    # BLOQUE 1: PROCESAMIENTO DE LA BITÁCORA OPERATIVA (TIEMPOS)
+    # ---------------------------------------------------------
+    df_tiempos = pd.read_excel(file_tiempos).dropna(how='all')
+    df_tiempos.columns = df_tiempos.columns.str.strip()
+
+    # Blindaje si faltan las columnas de ubicación
+    if 'yacimiento' not in df_tiempos.columns: df_tiempos['yacimiento'] = "S/D"
+    if 'nombre_pad' not in df_tiempos.columns: df_tiempos['nombre_pad'] = "S/D"
+
+    for col in ['fecha_inicio', 'fecha_fin']:
+        df_tiempos[col] = pd.to_datetime(df_tiempos[col], errors='coerce')
+
+    df_tiempos = df_tiempos.sort_values(by=['nombre_pozo', 'fecha_inicio']).reset_index(drop=True)
+    df_tiempos['duracion_minutos'] = (df_tiempos['fecha_fin'] - df_tiempos['fecha_inicio']).dt.total_seconds() / 60
+
+    falsos_npt = ['N/A', 'NA', 'NONE', '0', '-', 'FALSO', 'FALSE', 'NO', 'NAN']
+    if 'npt_clase' in df_tiempos.columns:
+        npt_texto = df_tiempos['npt_clase'].astype(str).str.strip().str.upper()
+        df_tiempos['es_npt'] = df_tiempos['npt_clase'].notna() & (npt_texto != '') & (~npt_texto.isin(falsos_npt))
+    else:
+        df_tiempos['es_npt'] = False
+
+    columnas_posibles = ['fase', 'codigo', 'actividad', 'adicional', 'evento']
+    columnas_existentes = [col for col in columnas_posibles if col in df_tiempos.columns]
+    texto_global = df_tiempos[columnas_existentes].fillna('').astype(str).agg(' '.join, axis=1).str.upper()
+
+    condiciones = [
+        texto_global.str.contains('SETUP', na=False),
+        texto_global.str.contains('RAMP', na=False),
+        texto_global.str.contains('FRAC', na=False)
+    ]
+    df_tiempos['fase_asignada'] = np.select(condiciones, ['SETUPF', 'RAMP', 'FRAC'], default='OTROS')
+
+    df_tiempos['fase_limpia'] = np.where(df_tiempos['es_npt'], np.nan, df_tiempos['fase_asignada'])
+    fase_limpia_anterior = df_tiempos.groupby('nombre_pozo')['fase_limpia'].ffill().shift(1)
+
+    cambio_pozo = df_tiempos['nombre_pozo'] != df_tiempos['nombre_pozo'].shift(1)
+    reinicio_secuencia = ((df_tiempos['fase_asignada'].isin(['SETUPF', 'RAMP'])) & (fase_limpia_anterior == 'FRAC') & (~df_tiempos['es_npt']))
+
+    df_tiempos['inicio_etapa'] = cambio_pozo | reinicio_secuencia
+    df_tiempos['nro_etapa_inferido'] = df_tiempos.groupby('nombre_pozo')['inicio_etapa'].cumsum()
+
+    df_ops_netas = df_tiempos[~df_tiempos['es_npt']].copy()
+    df_secuencia = df_ops_netas.pivot_table(index=['nombre_pozo', 'nro_etapa_inferido'], columns='fase_asignada', values='duracion_minutos', aggfunc='sum', fill_value=0).reset_index()
+
+    for col in ['SETUPF', 'RAMP', 'FRAC']:
+        if col not in df_secuencia.columns: df_secuencia[col] = 0
+
+    if 'nro_etapa' in df_tiempos.columns:
+        mapa_etapas = df_tiempos[df_tiempos['nro_etapa'].notna() & (df_tiempos['nro_etapa'].astype(str).str.strip() != '')]
+        mapa_etapas = mapa_etapas.groupby(['nombre_pozo', 'nro_etapa_inferido'])['nro_etapa'].last().reset_index()
+        df_secuencia = pd.merge(df_secuencia, mapa_etapas, on=['nombre_pozo', 'nro_etapa_inferido'], how='left')
+    else:
+        df_secuencia['nro_etapa'] = df_secuencia['nro_etapa_inferido']
+
+    df_secuencia = df_secuencia[['nombre_pozo', 'nro_etapa', 'nro_etapa_inferido', 'SETUPF', 'RAMP', 'FRAC']]
+
+    fecha_base_inicio = (df_tiempos['fecha_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
+    fecha_base_fin = (df_tiempos['fecha_fin'] - pd.Timedelta(hours=6, seconds=1) + pd.Timedelta(days=1)).dt.date
+    df_tiempos['fecha_reporte'] = pd.to_datetime(np.where(df_tiempos['fase_asignada'] == 'FRAC', fecha_base_fin, fecha_base_inicio))
+    df_tiempos['fase_para_resumen'] = np.where(df_tiempos['es_npt'], 'NPT', df_tiempos['fase_asignada'])
+
+    df_resumen_diario = df_tiempos.pivot_table(index='fecha_reporte', columns='fase_para_resumen', values='duracion_minutos', aggfunc='sum', fill_value=0).reset_index()
+
+    for col in ['SETUPF', 'RAMP', 'FRAC', 'NPT']:
+        if col not in df_resumen_diario.columns: df_resumen_diario[col] = 0
+
+    if 'nro_etapa' in df_tiempos.columns:
+        etapas_cerradas = df_tiempos[df_tiempos['nro_etapa'].notna() & (df_tiempos['nro_etapa'].astype(str).str.strip() != '')].copy()
+        etapas_cerradas['id_cierre'] = etapas_cerradas['nombre_pozo'].astype(str) + "_" + etapas_cerradas['nro_etapa'].astype(str)
+        etapas_por_dia = etapas_cerradas.groupby('fecha_reporte')['id_cierre'].nunique().reset_index()
+        etapas_por_dia.rename(columns={'id_cierre': 'cantidad_etapas'}, inplace=True)
+    else:
+        etapas_por_dia = pd.DataFrame(columns=['fecha_reporte', 'cantidad_etapas'])
+
+    df_resumen_diario = pd.merge(df_resumen_diario, etapas_por_dia, on='fecha_reporte', how='left')
+    df_resumen_diario['cantidad_etapas'] = df_resumen_diario['cantidad_etapas'].fillna(0).astype(int)
+
+    # ---------------------------------------------------------
+    # BLOQUE 2: PROCESAMIENTO TÉCNICO Y AUDITORÍA CP (HOJA 9)
+    # ---------------------------------------------------------
+    df_continuo = pd.read_excel(file_continuo).dropna(how='all')
+    df_continuo.columns = df_continuo.columns.str.strip()
+
+    for col in ['fecha_hora_inicio', 'fecha_hora_caudal_70', 'fecha_hora_fin']:
+        df_continuo[col] = pd.to_datetime(df_continuo[col], errors='coerce')
+
+    df_continuo = df_continuo.sort_values(by=['fecha_hora_inicio']).reset_index(drop=True)
+
+    df_continuo['Inicio_a_70_min'] = (df_continuo['fecha_hora_caudal_70'] - df_continuo['fecha_hora_inicio']).dt.total_seconds() / 60
+    df_continuo['70_a_Fin_min'] = (df_continuo['fecha_hora_fin'] - df_continuo['fecha_hora_caudal_70']).dt.total_seconds() / 60
+    df_continuo['Bombeo_Total_min'] = (df_continuo['fecha_hora_fin'] - df_continuo['fecha_hora_inicio']).dt.total_seconds() / 60
+
+    df_continuo['fecha_reporte'] = pd.to_datetime((df_continuo['fecha_hora_fin'] - pd.Timedelta(hours=6, seconds=1) + pd.Timedelta(days=1)).dt.date)
+    df_continuo['secuencia_diaria'] = df_continuo.groupby('fecha_reporte').cumcount() + 1
+
+    def encontrar_columna(df, texto_buscado):
+        for col in df.columns:
+            if texto_buscado.lower() in str(col).lower(): return col
+        return None
+
+    col_cp = encontrar_columna(df_continuo, 'continuous')
+    col_sweep = encontrar_columna(df_continuo, 'sweep')
+    col_screenout = encontrar_columna(df_continuo, 'screen')
+    cols_operativas = [c for c in [col_cp, col_sweep, col_screenout] if c is not None]
+
+    if col_cp is not None:
+        cp_texto = df_continuo[col_cp].astype(str).str.strip().str.upper()
+        df_continuo['es_cp'] = cp_texto.isin(['1', 'SI', 'YES', 'TRUE', 'V', 'X'])
+    else:
+        df_continuo['es_cp'] = False
+        df_continuo['continuous_pumping'] = "N/A"
+        col_cp = 'continuous_pumping'
+
+    df_continuo['pozo_etapa_actual'] = df_continuo['nombre_pozo'].astype(str) + " Etapa " + df_continuo['nro_etapa'].astype(str)
+    df_continuo['pozo_etapa_anterior'] = df_continuo['pozo_etapa_actual'].shift(1).fillna('Inicio Operaciones')
+    df_continuo['transicion_cp'] = np.where(df_continuo['es_cp'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
+
+    df_continuo['fecha_hora_fin_anterior'] = df_continuo['fecha_hora_fin'].shift(1)
+    df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] = (df_continuo['fecha_hora_inicio'] - df_continuo['fecha_hora_fin_anterior']).dt.total_seconds() / 60
+
+    df_continuo['es_cp_tecnico'] = (df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].notna()) & (df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5)
+    df_continuo['Esta_cargado_correctamente?'] = np.where(df_continuo['es_cp'] == df_continuo['es_cp_tecnico'], 'Si', 'No')
+    df_continuo.loc[0, 'Esta_cargado_correctamente?'] = 'Si'
+
+    df_continuo['transicion_cp_con_nueva_logica_chequeo'] = np.where(df_continuo['es_cp_tecnico'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
+
+    columnas_h9 = ['fecha_reporte', 'secuencia_diaria', 'transicion_cp', 'fecha_hora_inicio', 'fecha_hora_fin', col_cp, 'Tiempo_entre_fin_e_inicio_de_nueva_fractura', 'Esta_cargado_correctamente?', 'transicion_cp_con_nueva_logica_chequeo']
+    cols_h9_final = [c for c in columnas_h9 if c in df_continuo.columns] + ['nombre_pozo', 'nro_etapa']
+    df_hoja9 = df_continuo[cols_h9_final].copy()
+    if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_hoja9.columns:
+        df_hoja9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] = df_hoja9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].round(2)
+
+    df_resumen_cp = df_continuo.groupby('fecha_reporte').agg(etapas_totales=('nro_etapa', 'count'), etapas_continuous_pumping=('es_cp', 'sum')).reset_index()
+
+    # ---------------------------------------------------------
+    # BLOQUE 3: BASES MAESTRAS (CRUCE Y QA/QC)
+    # ---------------------------------------------------------
+    df_secuencia['nro_etapa_str'] = df_secuencia['nro_etapa'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+    df_continuo['nro_etapa_str'] = df_continuo['nro_etapa'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+
+    columnas_tecnicas_a_cruzar = ['nombre_pozo', 'nro_etapa_str', 'fecha_reporte', 'secuencia_diaria', 'Inicio_a_70_min', '70_a_Fin_min', 'Bombeo_Total_min', 'transicion_cp'] + cols_operativas
+
+    df_qaqc = pd.merge(df_secuencia[['nombre_pozo', 'nro_etapa_str', 'SETUPF', 'RAMP', 'FRAC']], df_continuo[columnas_tecnicas_a_cruzar], on=['nombre_pozo', 'nro_etapa_str'], how='outer')
+    df_qaqc.rename(columns={'nro_etapa_str': 'Etapa', 'SETUPF': 'Tiempos_SETUPF_min', 'RAMP': 'Tiempos_RAMP_min', 'FRAC': 'Tiempos_FRAC_min', 'Inicio_a_70_min': 'Tecnico_Inicio_a_70_min', '70_a_Fin_min': 'Tecnico_70_a_Fin_min'}, inplace=True)
+
+    if 'Tiempos_RAMP_min' in df_qaqc.columns and 'Tecnico_Inicio_a_70_min' in df_qaqc.columns: df_qaqc['Delta_RAMP_min'] = (df_qaqc['Tiempos_RAMP_min'] - df_qaqc['Tecnico_Inicio_a_70_min']).round(2)
+    if 'Tiempos_FRAC_min' in df_qaqc.columns and 'Tecnico_70_a_Fin_min' in df_qaqc.columns: df_qaqc['Delta_FRAC_min'] = (df_qaqc['Tiempos_FRAC_min'] - df_qaqc['Tecnico_70_a_Fin_min']).round(2)
+
+    df_master_diario = pd.merge(df_resumen_diario, df_resumen_cp, on='fecha_reporte', how='outer')
+
+    # ---------------------------------------------------------
+    # BLOQUE 5: NUEVA ESTRUCTURA HOJA 8 
+    # ---------------------------------------------------------
+    resumen_pivot = df_tiempos.pivot_table(index='fecha_reporte', columns=['fase_asignada', 'es_npt'], values='duracion_minutos', aggfunc='sum', fill_value=0)
+    resumen_pivot.columns = [f"{fase}_{'NPT' if npt else 'Neto'}_min" for fase, npt in resumen_pivot.columns]
+    resumen_pivot = resumen_pivot.reset_index()
+
+    for fase in ['SETUPF', 'RAMP', 'FRAC', 'OTROS']:
+        if f"{fase}_Neto_min" not in resumen_pivot: resumen_pivot[f"{fase}_Neto_min"] = 0
+        if f"{fase}_NPT_min" not in resumen_pivot: resumen_pivot[f"{fase}_NPT_min"] = 0
+
+    df_hoja8 = pd.merge(resumen_pivot, etapas_por_dia, on='fecha_reporte', how='left')
+    df_hoja8['cantidad_etapas'] = df_hoja8['cantidad_etapas'].fillna(0).astype(int)
+
+    df_hoja8['NPT Total min'] = (df_hoja8['SETUPF_NPT_min'] + df_hoja8['RAMP_NPT_min'] + df_hoja8['FRAC_NPT_min'] + df_hoja8['OTROS_NPT_min']).round(2)
+
+    for fase in ['SETUPF', 'RAMP', 'FRAC']:
+        df_hoja8[f"{fase} Sin NPT min"] = df_hoja8[f"{fase}_Neto_min"].round(2)
+        df_hoja8[f"{fase} Con NPT min"] = (df_hoja8[f"{fase}_Neto_min"] + df_hoja8[f"{fase}_NPT_min"]).round(2)
+        df_hoja8[f"{fase} Sin NPT hrs"] = (df_hoja8[f"{fase} Sin NPT min"] / 60).round(2)
+        df_hoja8[f"{fase} Con NPT hrs"] = (df_hoja8[f"{fase} Con NPT min"] / 60).round(2)
         
-        # 1. Intenta leer como texto normal
-        res = pd.to_datetime(serie, errors='coerce', dayfirst=True)
+        df_hoja8[f"Promedio {fase} Sin NPT min"] = np.where(df_hoja8['cantidad_etapas'] > 0, (df_hoja8[f"{fase} Sin NPT min"] / df_hoja8['cantidad_etapas']).round(2), 0)
+        df_hoja8[f"Promedio {fase} Con NPT min"] = np.where(df_hoja8['cantidad_etapas'] > 0, (df_hoja8[f"{fase} Con NPT min"] / df_hoja8['cantidad_etapas']).round(2), 0)
+
+    df_hoja8['SETUPF NPT min'] = df_hoja8['SETUPF_NPT_min'].round(2)
+    df_hoja8['RAMP NPT min'] = df_hoja8['RAMP_NPT_min'].round(2)
+    df_hoja8['FRAC NPT min'] = df_hoja8['FRAC_NPT_min'].round(2)
+    df_hoja8['OTROS NPT min'] = df_hoja8['OTROS_NPT_min'].round(2)
+
+    df_hoja8['NPT Promedio (min)'] = np.where(df_hoja8['cantidad_etapas'] > 0, (df_hoja8['NPT Total min'] / df_hoja8['cantidad_etapas']).round(2), 0)
+    df_hoja8['SETUPF NPT Promedio (min)'] = np.where(df_hoja8['cantidad_etapas'] > 0, (df_hoja8['SETUPF NPT min'] / df_hoja8['cantidad_etapas']).round(2), 0)
+    df_hoja8['RAMP NPT Promedio (min)'] = np.where(df_hoja8['cantidad_etapas'] > 0, (df_hoja8['RAMP NPT min'] / df_hoja8['cantidad_etapas']).round(2), 0)
+    df_hoja8['FRAC NPT Promedio (min)'] = np.where(df_hoja8['cantidad_etapas'] > 0, (df_hoja8['FRAC NPT min'] / df_hoja8['cantidad_etapas']).round(2), 0)
+    df_hoja8['OTROS NPT Promedio (min)'] = np.where(df_hoja8['cantidad_etapas'] > 0, (df_hoja8['OTROS NPT min'] / df_hoja8['cantidad_etapas']).round(2), 0)
+
+    df_hoja8['Promedio PAD SETUPF Sin NPT (min)'] = [f"=AVERAGE(G$2:G{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['Promedio PAD SETUPF Con NPT (min)'] = [f"=AVERAGE(H$2:H{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['Promedio PAD RAMP Sin NPT (min)'] = [f"=AVERAGE(M$2:M{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['Promedio PAD RAMP Con NPT (min)'] = [f"=AVERAGE(N$2:N{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['Promedio PAD FRAC Sin NPT (min)'] = [f"=AVERAGE(S$2:S{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['Promedio PAD FRAC Con NPT (min)'] = [f"=AVERAGE(T$2:T{i+2})" for i in range(len(df_hoja8))]
+
+    df_hoja8['NPT Promedio PAD (min)'] = [f"=AVERAGE(AF$2:AF{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['SETUPF NPT Promedio PAD (min)'] = [f"=AVERAGE(AG$2:AG{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['RAMP NPT Promedio PAD (min)'] = [f"=AVERAGE(AH$2:AH{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['FRAC NPT Promedio PAD (min)'] = [f"=AVERAGE(AI$2:AI{i+2})" for i in range(len(df_hoja8))]
+    df_hoja8['OTROS NPT Promedio PAD (min)'] = [f"=AVERAGE(AJ$2:AJ{i+2})" for i in range(len(df_hoja8))]
+
+    columnas_h8 = [
+        'fecha_reporte', 'cantidad_etapas',
+        'SETUPF Sin NPT min', 'SETUPF Con NPT min', 'SETUPF Sin NPT hrs', 'SETUPF Con NPT hrs', 'Promedio SETUPF Sin NPT min', 'Promedio SETUPF Con NPT min',
+        'RAMP Sin NPT min', 'RAMP Con NPT min', 'RAMP Sin NPT hrs', 'RAMP Con NPT hrs', 'Promedio RAMP Sin NPT min', 'Promedio RAMP Con NPT min',
+        'FRAC Sin NPT min', 'FRAC Con NPT min', 'FRAC Sin NPT hrs', 'FRAC Con NPT hrs', 'Promedio FRAC Sin NPT min', 'Promedio FRAC Con NPT min',
+        'NPT Total min', 'SETUPF NPT min', 'RAMP NPT min', 'FRAC NPT min', 'OTROS NPT min',
+        'Promedio PAD SETUPF Sin NPT (min)', 'Promedio PAD SETUPF Con NPT (min)',
+        'Promedio PAD RAMP Sin NPT (min)', 'Promedio PAD RAMP Con NPT (min)',
+        'Promedio PAD FRAC Sin NPT (min)', 'Promedio PAD FRAC Con NPT (min)',
+        'NPT Promedio (min)', 'SETUPF NPT Promedio (min)', 'RAMP NPT Promedio (min)', 
+        'FRAC NPT Promedio (min)', 'OTROS NPT Promedio (min)',
+        'NPT Promedio PAD (min)', 'SETUPF NPT Promedio PAD (min)', 
+        'RAMP NPT Promedio PAD (min)', 'FRAC NPT Promedio PAD (min)', 'OTROS NPT Promedio PAD (min)'
+    ]
+    df_hoja8 = df_hoja8[columnas_h8].sort_values(by='fecha_reporte')
+    df_hoja8.rename(columns={'fecha_reporte': 'fecha reporte', 'cantidad_etapas': 'cantidad etapas'}, inplace=True)
+
+    # ---------------------------------------------------------
+    # BLOQUE 6: EXPORTACIÓN EN MEMORIA (EXCEL PARA DESCARGA)
+    # ---------------------------------------------------------
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_secuencia.drop(columns=['nro_etapa_str'], errors='ignore').to_excel(writer, sheet_name='1_Secuencia_Neta', index=False)
+        cols_drop_t = ['fase_limpia', 'inicio_etapa', 'fase_para_resumen']
+        df_tiempos.drop(columns=[c for c in cols_drop_t if c in df_tiempos.columns]).to_excel(writer, sheet_name='2_Base_Mapeada_Tiempos', index=False)
+        df_resumen_diario.to_excel(writer, sheet_name='3_Resumen_Diario_Tiempos', index=False)
         
-        # 2. Si falló, rescata los números ocultos de Excel
-        mask_nat = res.isna() & serie.notna()
-        if mask_nat.any():
-            try:
-                num_val = pd.to_numeric(serie[mask_nat], errors='coerce')
-                res.loc[mask_nat] = pd.to_datetime(num_val, unit='D', origin='1899-12-30', errors='coerce')
-            except Exception:
-                pass
-                
-        # 3. Arrastra la fecha a las celdas vacías de abajo (solo para fecha_reporte)
-        if arrastrar:
-            res = res.ffill()
-            
-        # 4. Limpia la hora si es solo fecha, o la respeta si es para el Gantt
-        if not mantener_hora:
-            res = res.dt.normalize()
-            
-        return res
+        cols_drop_c = ['es_cp', 'pozo_etapa_actual', 'pozo_etapa_anterior', 'nro_etapa_str', 'fecha_hora_fin_anterior', 'Tiempo_entre_fin_e_inicio_de_nueva_fractura', 'es_cp_tecnico', 'Esta_cargado_correctamente?', 'transicion_cp_con_nueva_logica_chequeo']
+        df_continuo_clean = df_continuo.drop(columns=[c for c in cols_drop_c if c in df_continuo.columns])
+        columnas_frente_4 = ['fecha_reporte', 'secuencia_diaria', 'transicion_cp'] + cols_operativas
+        columnas_resto_4 = [c for c in df_continuo_clean.columns if c not in columnas_frente_4]
+        
+        df_continuo_clean[[c for c in columnas_frente_4 + columnas_resto_4 if c in df_continuo_clean.columns]].to_excel(writer, sheet_name='4_Detalle_Tiempos_Bombeo', index=False)
+        df_resumen_cp.to_excel(writer, sheet_name='5_Resumen_CP_Diario', index=False)
+        df_qaqc.to_excel(writer, sheet_name='6_QAQC_Tiempos_vs_Tecnico', index=False)
+        df_master_diario.to_excel(writer, sheet_name='7_Resumen_Diario_Global', index=False)
+        df_hoja8.to_excel(writer, sheet_name='8_Comparativa_y_NPTs', index=False)
+        df_hoja9.to_excel(writer, sheet_name='9_Revision_Continuous_Pumping', index=False)
+    
+    excel_bytes = output.getvalue()
 
-    # 2. Aplicamos la función a TODO
-    if 'fecha_reporte' in h2.columns: h2['fecha_reporte'] = parse_date_robust(h2['fecha_reporte'], arrastrar=True, mantener_hora=False)
-    if 'fecha_fin' in h2.columns: h2['fecha_fin'] = parse_date_robust(h2['fecha_fin'], arrastrar=False, mantener_hora=True)
-    
-    if 'fecha_reporte' in h4.columns: h4['fecha_reporte'] = parse_date_robust(h4['fecha_reporte'], arrastrar=True, mantener_hora=False)
-    
-    # Manejo seguro para h8 (a veces tiene guion bajo, a veces espacio)
-    if 'fecha reporte' in h8.columns: h8['fecha reporte'] = parse_date_robust(h8['fecha reporte'], arrastrar=True, mantener_hora=False)
-    elif 'fecha_reporte' in h8.columns: h8['fecha_reporte'] = parse_date_robust(h8['fecha_reporte'], arrastrar=True, mantener_hora=False)
-    
-    if 'fecha_reporte' in h9.columns: h9['fecha_reporte'] = parse_date_robust(h9['fecha_reporte'], arrastrar=True, mantener_hora=False)
-    
-    # ACÁ ESTÁ EL SECRETO DEL GANTT: Le decimos que NO borre la hora
-    if 'fecha_hora_inicio' in h9.columns: h9['fecha_hora_inicio'] = parse_date_robust(h9['fecha_hora_inicio'], arrastrar=False, mantener_hora=True)
-    if 'fecha_hora_fin' in h9.columns: h9['fecha_hora_fin'] = parse_date_robust(h9['fecha_hora_fin'], arrastrar=False, mantener_hora=True)
+    # ---------------------------------------------------------
+    # PREPARACIÓN PARA EL DASHBOARD UI (HOMOLOGACIÓN H2, H8, H9)
+    # ---------------------------------------------------------
+    h2 = df_tiempos.copy()
+    h8 = df_hoja8.copy()
+    h9 = df_hoja9.copy()
 
-    # 3. Mapeo de Yacimiento y PAD
-    h2.rename(columns={'yacimiento': 'Yacimiento', 'nombre_pad': 'PAD'}, inplace=True)
+    if 'yacimiento' in h2.columns: h2.rename(columns={'yacimiento': 'Yacimiento'}, inplace=True)
+    if 'nombre_pad' in h2.columns: h2.rename(columns={'nombre_pad': 'PAD'}, inplace=True)
+    
     if 'fecha_reporte' in h2.columns and not h2['fecha_reporte'].dropna().empty:
         mapa_ubicacion = h2.dropna(subset=['fecha_reporte']).groupby('fecha_reporte')[['Yacimiento', 'PAD']].first().reset_index()
-        
-        # Cruzar con cuidado
-        col_fecha_h8 = 'fecha reporte' if 'fecha reporte' in h8.columns else 'fecha_reporte'
-        if col_fecha_h8 in h8.columns:
-            h8 = pd.merge(h8, mapa_ubicacion, left_on=col_fecha_h8, right_on='fecha_reporte', how='left')
+        if 'fecha reporte' in h8.columns:
+            h8 = pd.merge(h8, mapa_ubicacion, left_on='fecha reporte', right_on='fecha_reporte', how='left')
         h9 = pd.merge(h9, mapa_ubicacion, on='fecha_reporte', how='left')
     
     yac_dominante = h2['Yacimiento'].dropna().mode()[0] if ('Yacimiento' in h2.columns and not h2['Yacimiento'].dropna().empty) else "S/D"
@@ -147,49 +344,56 @@ def cargar_datos_desde_google(url):
         if 'PAD' in df_target.columns: df_target['PAD'] = df_target['PAD'].fillna(pad_dominante)
         else: df_target['PAD'] = pad_dominante
 
-    # 4. Normalizar secuencias y cruzar Pozo/Etapa
-    if 'secuencia_diaria' in h4.columns: h4['secuencia_diaria'] = pd.to_numeric(h4['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
-    if 'secuencia_diaria' in h9.columns: h9['secuencia_diaria'] = pd.to_numeric(h9['secuencia_diaria'], errors='coerce').fillna(-1).astype(int)
-
-    if 'secuencia_diaria' in h9.columns and 'secuencia_diaria' in h4.columns:
-        h9 = pd.merge(h9, h4[['fecha_reporte', 'secuencia_diaria', 'nombre_pozo', 'nro_etapa']], 
-                      on=['fecha_reporte', 'secuencia_diaria'], how='left')
-
     h9['nombre_pozo'] = h9['nombre_pozo'].fillna("Pozo S/D")
     if 'nro_etapa' in h9.columns: h9['nro_etapa'] = h9['nro_etapa'].fillna(0)
 
-    # 5. Generar fecha_reporte_cp sin inventar datos
-    h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
-    h9['fecha_reporte_cp'] = h9['fecha_reporte_cp'].fillna(h9['fecha_reporte'].dt.date)
-    
-    return h2, h8, h9
+    if 'fecha_hora_inicio' in h9.columns:
+        h9['fecha_reporte_cp'] = (h9['fecha_hora_inicio'] - pd.Timedelta(hours=6) + pd.Timedelta(days=1)).dt.date
+        h9['fecha_reporte_cp'] = h9['fecha_reporte_cp'].fillna(h9['fecha_reporte'].dt.date)
+
+    return h2, h8, h9, excel_bytes
+
 
 # ==========================================
-# INTERFAZ PRINCIPAL
+# INTERFAZ PRINCIPAL Y PANELES
 # ==========================================
 st.sidebar.title("⚙️ Panel de Control")
 
-if st.sidebar.button("🔄 Forzar Actualización Ahora"):
+if st.sidebar.button("🔄 Actualizar Datos Ahora (Drive)"):
     st.cache_data.clear()
     st.rerun()
 
 try:
-    with st.spinner('Conectando a base de datos segura...'):
-        df_h2, df_h8, df_h9 = cargar_datos_desde_google(URL_DEL_EXCEL)
-        
+    with st.spinner('Procesando datos en vivo desde Google Drive...'):
+        df_h2, df_h8, df_h9, archivo_maestro_bytes = descargar_y_procesar(URL_TIEMPOS, URL_CONTINUO)
+    
+    st.sidebar.success("✅ Base de datos actualizada.")
+    
+    # Botón para descargar el Excel procesado final
+    st.sidebar.divider()
+    st.sidebar.markdown("### Exportar Resultados")
+    st.sidebar.download_button(
+        label="📥 Descargar Excel Maestro (Full)",
+        data=archivo_maestro_bytes,
+        file_name=f"Reporte_Maestro_Fractura_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    st.sidebar.divider()
+
     zona_ar = pytz.timezone('America/Argentina/Buenos_Aires')
     hora_actual = datetime.now(zona_ar).strftime("%d/%m/%Y %H:%M hs")
-    ultima_op = pd.to_datetime(df_h2['fecha_fin'], errors='coerce').max()
-    hora_op = ultima_op.strftime("%d/%m/%Y %H:%M hs") if pd.notnull(ultima_op) else "Sin datos"
+    if 'fecha_fin' in df_h2.columns:
+        ultima_op = pd.to_datetime(df_h2['fecha_fin'], errors='coerce').max()
+        hora_op = ultima_op.strftime("%d/%m/%Y %H:%M hs") if pd.notnull(ultima_op) else "Sin datos"
+    else:
+        hora_op = "Sin datos"
     
-    st.sidebar.success(f"✅ Sincronizado:\n{hora_actual}")
     st.sidebar.info(f"⏱️ Última OP en pozo:\n{hora_op}")
-    st.sidebar.divider()
     
     seccion = st.sidebar.radio("Navegación Principal", ["⏳ Sección 1: Tiempos", "🔄 Sección 2: Continuous Pumping"])
     
     # ==========================================
-    # SECCIÓN 1: TIEMPOS
+    # DASHBOARD: SECCIÓN 1 (TIEMPOS)
     # ==========================================
     if seccion == "⏳ Sección 1: Tiempos":
         st.title("⏳ Control Operativo de Tiempos y NPT")
@@ -202,11 +406,11 @@ try:
         
         with tab1:
             col_s1, col_s2 = st.columns(2)
-            yacimientos_disp = df_h8['Yacimiento'].dropna().unique().tolist()
+            yacimientos_disp = df_h8['Yacimiento'].dropna().unique().tolist() if 'Yacimiento' in df_h8.columns else ["S/D"]
             if not yacimientos_disp: yacimientos_disp = ["S/D"]
             with col_s1: sel_yac_t1 = st.selectbox("Seleccionar Yacimiento (P1):", yacimientos_disp)
             
-            pads_disp = df_h8[df_h8['Yacimiento'] == sel_yac_t1]['PAD'].dropna().unique().tolist()
+            pads_disp = df_h8[df_h8['Yacimiento'] == sel_yac_t1]['PAD'].dropna().unique().tolist() if 'PAD' in df_h8.columns else ["S/D"]
             if not pads_disp: pads_disp = ["S/D"]
             with col_s2: sel_pad_t1 = st.selectbox("Seleccionar PAD (P1):", pads_disp)
             
@@ -217,34 +421,34 @@ try:
             suf_und = toggle_unidad 
             factor_div = 60 if toggle_unidad == "hrs" else 1 
             
-            acum_etapas = df_t1['cantidad etapas'].cumsum()
-            prom_pad_setupf = df_t1[f'SETUPF {suf_npt} min'].cumsum() / acum_etapas
-            prom_pad_ramp = df_t1[f'RAMP {suf_npt} min'].cumsum() / acum_etapas
-            prom_pad_frac = df_t1[f'FRAC {suf_npt} min'].cumsum() / acum_etapas
+            acum_etapas = df_t1['cantidad etapas'].cumsum() if 'cantidad etapas' in df_t1.columns else 1
+            prom_pad_setupf = df_t1[f'SETUPF {suf_npt} min'].cumsum() / acum_etapas if f'SETUPF {suf_npt} min' in df_t1.columns else 0
+            prom_pad_ramp = df_t1[f'RAMP {suf_npt} min'].cumsum() / acum_etapas if f'RAMP {suf_npt} min' in df_t1.columns else 0
+            prom_pad_frac = df_t1[f'FRAC {suf_npt} min'].cumsum() / acum_etapas if f'FRAC {suf_npt} min' in df_t1.columns else 0
             
-            prom_pad_npt_total = df_t1['NPT Total min'].cumsum() / acum_etapas
-            prom_pad_npt_setupf = df_t1['SETUPF NPT min'].cumsum() / acum_etapas
-            prom_pad_npt_ramp = df_t1['RAMP NPT min'].cumsum() / acum_etapas
-            prom_pad_npt_frac = df_t1['FRAC NPT min'].cumsum() / acum_etapas
+            prom_pad_npt_total = df_t1['NPT Total min'].cumsum() / acum_etapas if 'NPT Total min' in df_t1.columns else 0
+            prom_pad_npt_setupf = df_t1['SETUPF NPT min'].cumsum() / acum_etapas if 'SETUPF NPT min' in df_t1.columns else 0
+            prom_pad_npt_ramp = df_t1['RAMP NPT min'].cumsum() / acum_etapas if 'RAMP NPT min' in df_t1.columns else 0
+            prom_pad_npt_frac = df_t1['FRAC NPT min'].cumsum() / acum_etapas if 'FRAC NPT min' in df_t1.columns else 0
             
             st.subheader(f"Cuadro 1 - Tiempos Operativos ({suf_und}) - {sel_pad_t1}")
             try:
                 cuadro1 = pd.DataFrame({
                     "Fecha de Reporte": pd.to_datetime(df_t1[col_fecha_h8]).dt.strftime('%d/%m/%Y'),
                     "Cant. Etapas": df_t1['cantidad etapas'].fillna(0).astype(int),
-                    "Setupf": df_t1[f'SETUPF {suf_npt} {suf_und}'].fillna(0).round(2),
+                    "Setupf": df_t1[f'SETUPF {suf_npt} {suf_und}'].fillna(0).round(2) if f'SETUPF {suf_npt} {suf_und}' in df_t1.columns else (df_t1[f'SETUPF {suf_npt} min'].fillna(0)/factor_div).round(2),
                     "Setupf Prom 24hs": (df_t1[f'Promedio SETUPF {suf_npt} min'].fillna(0) / factor_div).round(2),
-                    "Setupf Prom PAD": (prom_pad_setupf.fillna(0) / factor_div).round(2),
-                    "Ramp": df_t1[f'RAMP {suf_npt} {suf_und}'].fillna(0).round(2),
+                    "Setupf Prom PAD": (prom_pad_setupf.fillna(0) / factor_div).round(2) if isinstance(prom_pad_setupf, pd.Series) else 0,
+                    "Ramp": df_t1[f'RAMP {suf_npt} {suf_und}'].fillna(0).round(2) if f'RAMP {suf_npt} {suf_und}' in df_t1.columns else (df_t1[f'RAMP {suf_npt} min'].fillna(0)/factor_div).round(2),
                     "Ramp Prom 24hs": (df_t1[f'Promedio RAMP {suf_npt} min'].fillna(0) / factor_div).round(2),
-                    "Ramp Prom PAD": (prom_pad_ramp.fillna(0) / factor_div).round(2),
-                    "Frac": df_t1[f'FRAC {suf_npt} {suf_und}'].fillna(0).round(2),
+                    "Ramp Prom PAD": (prom_pad_ramp.fillna(0) / factor_div).round(2) if isinstance(prom_pad_ramp, pd.Series) else 0,
+                    "Frac": df_t1[f'FRAC {suf_npt} {suf_und}'].fillna(0).round(2) if f'FRAC {suf_npt} {suf_und}' in df_t1.columns else (df_t1[f'FRAC {suf_npt} min'].fillna(0)/factor_div).round(2),
                     "Frac Prom 24hs": (df_t1[f'Promedio FRAC {suf_npt} min'].fillna(0) / factor_div).round(2),
-                    "Frac Prom PAD": (prom_pad_frac.fillna(0) / factor_div).round(2)
+                    "Frac Prom PAD": (prom_pad_frac.fillna(0) / factor_div).round(2) if isinstance(prom_pad_frac, pd.Series) else 0
                 })
                 st.dataframe(cuadro1, use_container_width=True, hide_index=True)
-            except KeyError as e:
-                st.warning(f"⚠️ Hubo un problema encontrando la columna: {e}")
+            except Exception as e:
+                st.warning(f"⚠️ Hubo un problema al dibujar el Cuadro 1: {e}")
 
             st.subheader(f"Cuadro 2 - Desglose de NPT ({sel_pad_t1})")
             try:
@@ -253,19 +457,19 @@ try:
                     "Cant. Etapas": df_t1['cantidad etapas'].fillna(0).astype(int),
                     "NPT Total": (df_t1['NPT Total min'] / factor_div).fillna(0).round(2),
                     "NPT Prom 24hs": (df_t1['NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                    "NPT Prom PAD": (prom_pad_npt_total.fillna(0) / factor_div).round(2),
+                    "NPT Prom PAD": (prom_pad_npt_total.fillna(0) / factor_div).round(2) if isinstance(prom_pad_npt_total, pd.Series) else 0,
                     "NPT Setupf": (df_t1['SETUPF NPT min'] / factor_div).fillna(0).round(2),
                     "NPT Setupf Prom 24hs": (df_t1['SETUPF NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                    "NPT Setupf Prom PAD": (prom_pad_npt_setupf.fillna(0) / factor_div).round(2),
+                    "NPT Setupf Prom PAD": (prom_pad_npt_setupf.fillna(0) / factor_div).round(2) if isinstance(prom_pad_npt_setupf, pd.Series) else 0,
                     "NPT Ramp": (df_t1['RAMP NPT min'] / factor_div).fillna(0).round(2),
                     "NPT Ramp Prom 24hs": (df_t1['RAMP NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                    "NPT Ramp Prom PAD": (prom_pad_npt_ramp.fillna(0) / factor_div).round(2),
+                    "NPT Ramp Prom PAD": (prom_pad_npt_ramp.fillna(0) / factor_div).round(2) if isinstance(prom_pad_npt_ramp, pd.Series) else 0,
                     "NPT Frac": (df_t1['FRAC NPT min'] / factor_div).fillna(0).round(2),
                     "NPT Frac Prom 24hs": (df_t1['FRAC NPT Promedio (min)'] / factor_div).fillna(0).round(2),
-                    "NPT Frac Prom PAD": (prom_pad_npt_frac.fillna(0) / factor_div).round(2)
+                    "NPT Frac Prom PAD": (prom_pad_npt_frac.fillna(0) / factor_div).round(2) if isinstance(prom_pad_npt_frac, pd.Series) else 0
                 })
                 st.dataframe(cuadro2, use_container_width=True, hide_index=True)
-            except KeyError as e:
+            except Exception as e:
                 pass
 
         with tab2:
@@ -300,7 +504,7 @@ try:
             st.dataframe(pd.DataFrame(resumen_macro), use_container_width=True, hide_index=True)
 
     # ==========================================
-    # SECCIÓN 2: CONTINUOUS PUMPING
+    # DASHBOARD: SECCIÓN 2 (CONTINUOUS PUMPING)
     # ==========================================
     elif seccion == "🔄 Sección 2: Continuous Pumping":
         st.title("🔄 Auditoría de Continuous Pumping")
@@ -309,11 +513,11 @@ try:
         
         with tab3:
             col_c1, col_c2 = st.columns(2)
-            yacimientos_disp = df_h9['Yacimiento'].dropna().unique().tolist()
+            yacimientos_disp = df_h9['Yacimiento'].dropna().unique().tolist() if 'Yacimiento' in df_h9.columns else ["S/D"]
             if not yacimientos_disp: yacimientos_disp = ["S/D"]
             with col_c1: sel_yac_c1 = st.selectbox("Seleccionar Yacimiento (C1):", yacimientos_disp)
             
-            pads_disp = df_h9[df_h9['Yacimiento'] == sel_yac_c1]['PAD'].dropna().unique().tolist()
+            pads_disp = df_h9[df_h9['Yacimiento'] == sel_yac_c1]['PAD'].dropna().unique().tolist() if 'PAD' in df_h9.columns else ["S/D"]
             if not pads_disp: pads_disp = ["S/D"]
             with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp)
             
