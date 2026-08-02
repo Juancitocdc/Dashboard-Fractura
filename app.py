@@ -632,11 +632,23 @@ try:
                 df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
                 df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
                 
-                # 4. Armado del Gráfico
+                # --- NUEVO: Textos limpios para el cartelito interactivo ---
+                df_gantt['Inicio_str'] = df_gantt['fecha_hora_inicio'].dt.strftime('%d/%m/%Y %H:%M')
+                df_gantt['Fin_str'] = df_gantt['fecha_hora_fin'].dt.strftime('%d/%m/%Y %H:%M')
+                
+                # 4. Armado del Gráfico (agregamos custom_data para mandarle variables limpias al tooltip)
                 fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
                                   color="Tipo_FRAC",
                                   color_discrete_map={"FRAC (Con CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
-                                  hover_data=["Etapa Nro"])
+                                  custom_data=['nombre_pozo', 'Etapa Nro', 'Inicio_str', 'Fin_str'])
+                
+                # --- NUEVO: Formateo exacto del cartelito con HTML (<b> para negrita, <br> para enter) ---
+                # El <extra></extra> al final borra un recuadro secundario molesto que suele aparecer al lado
+                fig.update_traces(
+                    hovertemplate="<b>%{customdata[0]} - Etapa %{customdata[1]}</b><br>" +
+                                  "Inicio de Fractura = %{customdata[2]}<br>" +
+                                  "Fin de Fractura = %{customdata[3]}<extra></extra>"
+                )
                 
                 fig.update_layout(barmode='overlay', legend_title_text="Telemetría de Bombeo")
                 fig.update_yaxes(autorange="reversed", type='category')
