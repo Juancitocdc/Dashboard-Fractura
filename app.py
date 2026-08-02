@@ -660,7 +660,7 @@ try:
     # DASHBOARD: SECCIÓN 2 (CONTINUOUS PUMPING)
     # ==========================================
     elif seccion == "🔄 Sección 2: Continuous Pumping":
-        st.title("🔄 Auditoría de Continuous Pumping")
+        st.title("🔄 Continuous Pumping")
         
         tab3, tab4 = st.tabs(["📊 Pestaña 1 (Diario por PAD)", "📋 Pestaña 2 (Resumen Gerencial)"])
         
@@ -683,7 +683,8 @@ try:
             
             st.subheader(f"Cuadro 1 - Evolución CP ({sel_pad_c1})")
             
-            todas_las_fechas = set(df_c1_h9['fecha_reporte'].dropna()) | set(df_c1_h9['fecha_reporte_cp'].dropna())
+            # NUEVO: Sumamos las fechas de df_c1_h2 para garantizar que los días 100% NPT no se pierdan
+            todas_las_fechas = set(df_c1_h9['fecha_reporte'].dropna()) | set(df_c1_h9['fecha_reporte_cp'].dropna()) | set(df_c1_h2['fecha_reporte'].dropna())
             fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) 
             
             std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
@@ -706,8 +707,7 @@ try:
                 else:
                     cp_dia = 0
 
-                # ... (cálculo de acumulados) ...
-
+                # Esto suma los minutos de TODO el día (incluyendo NPT de la hoja de tiempos)
                 if 'duracion_minutos' in df_dia_h2.columns:
                     minutos_dia = pd.to_numeric(df_dia_h2['duracion_minutos'], errors='coerce').sum()
                 else:
@@ -726,18 +726,18 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                if etapas_dia > 0 or cp_dia > 0:
-                    datos_cp.append({
-                        "Fecha Reporte": pd.to_datetime(fecha).strftime('%d/%m/%Y'),
-                        "Etapas Acum.": acum_etapas_fin,
-                        "Etapas Día": etapas_dia,
-                        "CP Logrados": cp_dia,
-                        "% CP (Día)": f"{pct_cp_dia:.1f}%",
-                        "% CP (PAD)": f"{pct_cp_pad:.1f}%",
-                        "Etapas STD": std_yac,
-                        "Etapas/Día (Real)": round(etapas_por_dia_real, 2),
-                        "Etapas Posibles CP (Acum-4)": posibles_acum_hoy
-                    })
+                # NUEVO: Se eliminó el "if" para que se guarden TODOS los días de la operación
+                datos_cp.append({
+                    "Fecha Reporte": pd.to_datetime(fecha).strftime('%d/%m/%Y'),
+                    "Etapas Acum.": acum_etapas_fin,
+                    "Etapas Día": etapas_dia,
+                    "CP Logrados": cp_dia,
+                    "% CP (Día)": f"{pct_cp_dia:.1f}%",
+                    "% CP (PAD)": f"{pct_cp_pad:.1f}%",
+                    "Etapas STD": std_yac,
+                    "Etapas/Día (Real)": round(etapas_por_dia_real, 2),
+                    "Etapas Posibles CP (Acum-4)": posibles_acum_hoy
+                })
                 
                 posibles_acum_ayer = posibles_acum_hoy
                 
