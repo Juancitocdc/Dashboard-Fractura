@@ -619,17 +619,20 @@ try:
             df_gantt = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
             
             if not df_gantt.empty:
-                # Usa directamente el veredicto del motor de procesamiento
+                # 1. ORDENAMOS CRONOLÓGICAMENTE PARA EL GANTT
+                df_gantt = df_gantt.sort_values('fecha_hora_inicio')
+                
+                # 2. Usa directamente el veredicto del motor de procesamiento
                 if 'es_cp_tecnico' in df_gantt.columns:
                     df_gantt['Es_CP'] = df_gantt['es_cp_tecnico'].fillna(False)
                 else:
                     df_gantt['Es_CP'] = False
                     
-                # Etiqueta para la leyenda del gráfico
+                # 3. Etiqueta para la leyenda del gráfico
                 df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
-
                 df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
                 
+                # 4. Armado del Gráfico
                 fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
                                   color="Tipo_FRAC",
                                   color_discrete_map={"FRAC (Con CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
