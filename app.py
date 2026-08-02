@@ -192,6 +192,12 @@ def descargar_y_procesar(url_tiempos, url_continuo):
         df_continuo['continuous_pumping'] = "N/A"
         col_cp = 'continuous_pumping'
 
+    # --- CREACIÓN DE VARIABLES DE TRANSICIÓN ---
+    df_continuo['pozo_etapa_actual'] = df_continuo['nombre_pozo'].astype(str) + " Etapa " + df_continuo['nro_etapa'].astype(str)
+    df_continuo['pozo_etapa_anterior'] = df_continuo['pozo_etapa_actual'].shift(1).fillna('Inicio Operaciones')
+    df_continuo['transicion_cp'] = np.where(df_continuo['es_cp'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
+
+    # --- INICIO NUEVA LÓGICA DE CP (CON PRESIONES) ---
     # 1. Blindaje: Asegurar que las columnas existan por si suben un Excel viejo
     if 'presion_final_3m [psi]' not in df_continuo.columns:
         df_continuo['presion_final_3m [psi]'] = np.nan
@@ -207,7 +213,6 @@ def descargar_y_procesar(url_tiempos, url_continuo):
     df_continuo['isip_anterior'] = df_continuo['isip_post_frac [psi]'].shift(1)
 
     # 4. Limpiamos las presiones para ver si realmente están vacías
-    # (Si pusieron "N/A", "-", espacios vacíos o "0", esto lo considera como que NO hay presión)
     no_hay_p3m = pd.to_numeric(df_continuo['presion_3m_anterior'], errors='coerce').fillna(0) == 0
     no_hay_isip = pd.to_numeric(df_continuo['isip_anterior'], errors='coerce').fillna(0) == 0
 
@@ -215,11 +220,11 @@ def descargar_y_procesar(url_tiempos, url_continuo):
     condicion_tiempo = df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].notna() & (df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5)
     df_continuo['es_cp_tecnico'] = condicion_tiempo & no_hay_p3m & no_hay_isip
     
-    # Auditoría: Compara la marca manual de la operadora vs la realidad técnica
+    # 6. Auditoría: Compara la marca manual de la operadora vs la realidad técnica
     df_continuo['Esta_cargado_correctamente?'] = np.where(df_continuo['es_cp'] == df_continuo['es_cp_tecnico'], 'Si', 'No')
     df_continuo.loc[0, 'Esta_cargado_correctamente?'] = 'Si' # La primera etapa no tiene etapa anterior
 
-    # Genera el texto de la transición solo si fue un CP exitoso
+    # 7. Genera el texto de la transición solo si fue un CP exitoso
     df_continuo['transicion_cp_con_nueva_logica_chequeo'] = np.where(df_continuo['es_cp_tecnico'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
     
     columnas_h9 = ['fecha_reporte', 'secuencia_diaria', 'transicion_cp', 'fecha_hora_inicio', 'fecha_hora_fin', col_cp, 'Tiempo_entre_fin_e_inicio_de_nueva_fractura', 'Esta_cargado_correctamente?', 'transicion_cp_con_nueva_logica_chequeo', 'presion_final_3m [psi]', 'isip_post_frac [psi]']
