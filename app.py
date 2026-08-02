@@ -42,9 +42,9 @@ if not st.session_state["acceso_concedido"]:
 # PARÁMETROS STD Y URLs
 # ==========================================
 PARAMETROS_STD = {
-    "Yacimiento_A": {"Etapas_Dia_STD": 8.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0},
-    "Yacimiento_B": {"Etapas_Dia_STD": 7.5, "Setupf_STD_min": 20.0, "Ramp_STD_min": 12.0},
-    "Default": {"Etapas_Dia_STD": 7.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0}
+    "FORTIN DE PIEDRA": {"Etapas_Dia_STD": 7.6, "Setupf_STD_min": 21.0, "Ramp_STD_min": 8.0, "Frac_STD_min": 122.0},
+    "LOS TOLDOS ESTE": {"Etapas_Dia_STD": 8.7, "Setupf_STD_min": 17.0, "Ramp_STD_min": 5.0, "Frac_STD_min": 119.0},
+    "Default": {"Etapas_Dia_STD": 7.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0, "Frac_STD_min": 120.0}
 }
 
 URL_TIEMPOS = "https://docs.google.com/spreadsheets/d/171LD-isnq1p9M9_H8sPSZIG8_s9El2WC/export?format=xlsx"
@@ -156,6 +156,85 @@ def descargar_y_procesar(url_tiempos, url_continuo):
     df_resumen_diario = pd.merge(df_resumen_diario, etapas_por_dia, on='fecha_reporte', how='left')
     df_resumen_diario['cantidad_etapas'] = df_resumen_diario['cantidad_etapas'].fillna(0).astype(int)
 
+    # # ---------------------------------------------------------
+    # # BLOQUE 2: PROCESAMIENTO TÉCNICO Y AUDITORÍA CP (HOJA 9)
+    # # ---------------------------------------------------------
+    # df_continuo = pd.read_excel(file_continuo).dropna(how='all')
+    # df_continuo.columns = df_continuo.columns.str.strip()
+
+    # for col in ['fecha_hora_inicio', 'fecha_hora_caudal_70', 'fecha_hora_fin']:
+    #     df_continuo[col] = pd.to_datetime(df_continuo[col], errors='coerce')
+
+    # df_continuo = df_continuo.sort_values(by=['fecha_hora_inicio']).reset_index(drop=True)
+
+    # df_continuo['Inicio_a_70_min'] = (df_continuo['fecha_hora_caudal_70'] - df_continuo['fecha_hora_inicio']).dt.total_seconds() / 60
+    # df_continuo['70_a_Fin_min'] = (df_continuo['fecha_hora_fin'] - df_continuo['fecha_hora_caudal_70']).dt.total_seconds() / 60
+    # df_continuo['Bombeo_Total_min'] = (df_continuo['fecha_hora_fin'] - df_continuo['fecha_hora_inicio']).dt.total_seconds() / 60
+
+    # df_continuo['fecha_reporte'] = pd.to_datetime((df_continuo['fecha_hora_fin'] - pd.Timedelta(hours=6, seconds=1) + pd.Timedelta(days=1)).dt.date)
+    # df_continuo['secuencia_diaria'] = df_continuo.groupby('fecha_reporte').cumcount() + 1
+
+    # def encontrar_columna(df, texto_buscado):
+    #     for col in df.columns:
+    #         if texto_buscado.lower() in str(col).lower(): return col
+    #     return None
+
+    # col_cp = encontrar_columna(df_continuo, 'continuous')
+    # col_sweep = encontrar_columna(df_continuo, 'sweep')
+    # col_screenout = encontrar_columna(df_continuo, 'screen')
+    # cols_operativas = [c for c in [col_cp, col_sweep, col_screenout] if c is not None]
+
+    # if col_cp is not None:
+    #     cp_texto = df_continuo[col_cp].astype(str).str.strip().str.upper()
+    #     df_continuo['es_cp'] = cp_texto.isin(['1', 'SI', 'YES', 'TRUE', 'V', 'X'])
+    # else:
+    #     df_continuo['es_cp'] = False
+    #     df_continuo['continuous_pumping'] = "N/A"
+    #     col_cp = 'continuous_pumping'
+
+    # # --- CREACIÓN DE VARIABLES DE TRANSICIÓN ---
+    # df_continuo['pozo_etapa_actual'] = df_continuo['nombre_pozo'].astype(str) + " Etapa " + df_continuo['nro_etapa'].astype(str)
+    # df_continuo['pozo_etapa_anterior'] = df_continuo['pozo_etapa_actual'].shift(1).fillna('Inicio Operaciones')
+    # df_continuo['transicion_cp'] = np.where(df_continuo['es_cp'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
+
+    # # --- INICIO NUEVA LÓGICA DE CP (CON PRESIONES) ---
+    # # 1. Blindaje: Asegurar que las columnas existan por si suben un Excel viejo
+    # if 'presion_final_3m [psi]' not in df_continuo.columns:
+    #     df_continuo['presion_final_3m [psi]'] = np.nan
+    # if 'isip_post_frac [psi]' not in df_continuo.columns:
+    #     df_continuo['isip_post_frac [psi]'] = np.nan
+
+    # # 2. Calcula la diferencia de tiempo
+    # df_continuo['fecha_hora_fin_anterior'] = df_continuo['fecha_hora_fin'].shift(1)
+    # df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] = (df_continuo['fecha_hora_inicio'] - df_continuo['fecha_hora_fin_anterior']).dt.total_seconds() / 60
+
+    # # 3. Traemos las presiones de la etapa ANTERIOR (la que acaba de terminar)
+    # df_continuo['presion_3m_anterior'] = df_continuo['presion_final_3m [psi]'].shift(1)
+    # df_continuo['isip_anterior'] = df_continuo['isip_post_frac [psi]'].shift(1)
+
+    # # 4. Limpiamos las presiones para ver si realmente están vacías
+    # no_hay_p3m = pd.to_numeric(df_continuo['presion_3m_anterior'], errors='coerce').fillna(0) == 0
+    # no_hay_isip = pd.to_numeric(df_continuo['isip_anterior'], errors='coerce').fillna(0) == 0
+
+    # # 5. Lógica dura combinada: Tiempo <= 5 min Y NO hay P3m Y NO hay ISIP
+    # condicion_tiempo = df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].notna() & (df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5)
+    # df_continuo['es_cp_tecnico'] = condicion_tiempo & no_hay_p3m & no_hay_isip
+    
+    # # 6. Auditoría: Compara la marca manual de la operadora vs la realidad técnica
+    # df_continuo['Esta_cargado_correctamente?'] = np.where(df_continuo['es_cp'] == df_continuo['es_cp_tecnico'], 'Si', 'No')
+    # df_continuo.loc[0, 'Esta_cargado_correctamente?'] = 'Si' # La primera etapa no tiene etapa anterior
+
+    # # 7. Genera el texto de la transición solo si fue un CP exitoso
+    # df_continuo['transicion_cp_con_nueva_logica_chequeo'] = np.where(df_continuo['es_cp_tecnico'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
+    
+    # columnas_h9 = ['fecha_reporte', 'secuencia_diaria', 'transicion_cp', 'fecha_hora_inicio', 'fecha_hora_fin', col_cp, 'Tiempo_entre_fin_e_inicio_de_nueva_fractura', 'es_cp_tecnico', 'Esta_cargado_correctamente?', 'transicion_cp_con_nueva_logica_chequeo', 'presion_final_3m [psi]', 'isip_post_frac [psi]']    
+    # cols_h9_final = [c for c in columnas_h9 if c in df_continuo.columns] + ['nombre_pozo', 'nro_etapa']
+    # df_hoja9 = df_continuo[cols_h9_final].copy()
+    # if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_hoja9.columns:
+    #     df_hoja9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] = df_hoja9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].round(2)
+
+    # df_resumen_cp = df_continuo.groupby('fecha_reporte').agg(etapas_totales=('nro_etapa', 'count'), etapas_continuous_pumping=('es_cp', 'sum')).reset_index()
+    
     # ---------------------------------------------------------
     # BLOQUE 2: PROCESAMIENTO TÉCNICO Y AUDITORÍA CP (HOJA 9)
     # ---------------------------------------------------------
@@ -234,6 +313,8 @@ def descargar_y_procesar(url_tiempos, url_continuo):
         df_hoja9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] = df_hoja9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].round(2)
 
     df_resumen_cp = df_continuo.groupby('fecha_reporte').agg(etapas_totales=('nro_etapa', 'count'), etapas_continuous_pumping=('es_cp', 'sum')).reset_index()
+
+
 
     # ---------------------------------------------------------
     # BLOQUE 3: BASES MAESTRAS (CRUCE Y QA/QC)
@@ -502,7 +583,10 @@ try:
             
             df_t2 = df_h8[(df_h8['Yacimiento'].isin(sel_yac_t2)) & (df_h8['PAD'].isin(sel_pad_t2))]
             
-            st.subheader("Cuadro 1 - Comparativa Macro vs. STD")
+            # ==========================================
+            # CUADRO 1: COMPARATIVA MACRO POR PAD
+            # ==========================================
+            st.subheader("Cuadro 1 - Comparativa Macro vs. STD (por PAD)")
             resumen_macro = []
             for pad in sel_pad_t2:
                 df_pad = df_t2[df_t2['PAD'] == pad]
@@ -513,17 +597,64 @@ try:
                 etapas_totales = df_pad['cantidad etapas'].sum()
                 setup_prom = df_pad['SETUPF Sin NPT min'].sum() / etapas_totales if etapas_totales > 0 else 0
                 ramp_prom = df_pad['RAMP Sin NPT min'].sum() / etapas_totales if etapas_totales > 0 else 0
+                frac_prom = df_pad['FRAC Sin NPT min'].sum() / etapas_totales if etapas_totales > 0 else 0
+                npt_total_pad = df_pad['NPT Total min'].sum()
+                npt_prom_pad = npt_total_pad / etapas_totales if etapas_totales > 0 else 0
                 
                 resumen_macro.append({
-                    "Yacimiento": yac, "PAD": pad,
-                    "Cant. Etapas": etapas_totales,
-                    "Cant. Etapas STD": std["Etapas_Dia_STD"],
+                    "Yacimiento": yac, 
+                    "PAD": pad,
+                    "Cantidad Etapas": etapas_totales,
+                    "Cantidad Etapas STD": std.get("Etapas_Dia_STD", 0),
                     "Setupf Prom PAD (min)": round(setup_prom, 2),
-                    "Setupf STD (min)": std["Setupf_STD_min"],
+                    "Setupf STD (min)": std.get("Setupf_STD_min", 0),
                     "Ramp Prom PAD (min)": round(ramp_prom, 2),
-                    "Ramp STD (min)": std["Ramp_STD_min"]
+                    "Ramp STD (min)": std.get("Ramp_STD_min", 0),
+                    "Frac Prom PAD (min)": round(frac_prom, 2),
+                    "Frac STD (min)": std.get("Frac_STD_min", "N/A"),
+                    "NPT Total PAD (min)": round(npt_total_pad, 2),
+                    "NPT Prom PAD (min)": round(npt_prom_pad, 2)
                 })
             st.dataframe(pd.DataFrame(resumen_macro), use_container_width=True, hide_index=True)
+
+            # ==========================================
+            # CUADRO 2: RESUMEN POR YACIMIENTO
+            # ==========================================
+            st.subheader("Cuadro 2 - Resumen por Yacimiento")
+            resumen_yac_tiempos = []
+            
+            for yac in sel_yac_t2:
+                # Nos aseguramos de sumar solo los PADs que están filtrados en pantalla
+                pads_del_yac = [p for p in sel_pad_t2 if p in df_t2[df_t2['Yacimiento'] == yac]['PAD'].unique()]
+                if not pads_del_yac: continue
+                
+                df_yac = df_t2[(df_t2['Yacimiento'] == yac) & (df_t2['PAD'].isin(pads_del_yac))]
+                if df_yac.empty: continue
+                
+                std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])
+                
+                etapas_totales_yac = df_yac['cantidad etapas'].sum()
+                setup_prom_yac = df_yac['SETUPF Sin NPT min'].sum() / etapas_totales_yac if etapas_totales_yac > 0 else 0
+                ramp_prom_yac = df_yac['RAMP Sin NPT min'].sum() / etapas_totales_yac if etapas_totales_yac > 0 else 0
+                frac_prom_yac = df_yac['FRAC Sin NPT min'].sum() / etapas_totales_yac if etapas_totales_yac > 0 else 0
+                npt_total_yac = df_yac['NPT Total min'].sum()
+                npt_prom_yac = npt_total_yac / etapas_totales_yac if etapas_totales_yac > 0 else 0
+                
+                resumen_yac_tiempos.append({
+                    "Yacimiento": yac,
+                    "Cantidad Etapas": etapas_totales_yac,
+                    "Cantidad Etapas STD": std.get("Etapas_Dia_STD", 0),
+                    "Setupf Prom Yac (min)": round(setup_prom_yac, 2),
+                    "Setupf STD (min)": std.get("Setupf_STD_min", 0),
+                    "Ramp Prom Yac (min)": round(ramp_prom_yac, 2),
+                    "Ramp STD (min)": std.get("Ramp_STD_min", 0),
+                    "Frac Prom Yac (min)": round(frac_prom_yac, 2),
+                    "Frac STD (min)": std.get("Frac_STD_min", "N/A"),
+                    "NPT Total Yac (min)": round(npt_total_yac, 2),
+                    "NPT Prom Yac (min)": round(npt_prom_yac, 2)
+                })
+                
+            st.dataframe(pd.DataFrame(resumen_yac_tiempos), use_container_width=True, hide_index=True)
 
     # ==========================================
     # DASHBOARD: SECCIÓN 2 (CONTINUOUS PUMPING)
