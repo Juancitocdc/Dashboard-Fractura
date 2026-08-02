@@ -626,13 +626,13 @@ try:
                     df_gantt['Es_CP'] = False
                     
                 # Etiqueta para la leyenda del gráfico
-                df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Logró CP)', 'FRAC (Sin CP)')
+                df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
 
                 df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
                 
                 fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
                                   color="Tipo_FRAC",
-                                  color_discrete_map={"FRAC (Logró CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
+                                  color_discrete_map={"FRAC (Con CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
                                   hover_data=["Etapa Nro"])
                 
                 fig.update_layout(barmode='overlay', legend_title_text="Telemetría de Bombeo")
@@ -659,7 +659,7 @@ try:
                 st.dataframe(tabla1, use_container_width=True, hide_index=True)
 
             with col_t2:
-                st.subheader("Etapas que lograron CP")
+                st.subheader("Etapas con Continous Pumping")
                 if 'es_cp_tecnico' in df_c1_h9.columns:
                     df_logrados = df_c1_h9[df_c1_h9['es_cp_tecnico'] == True].copy()
                 else:
