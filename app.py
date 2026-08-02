@@ -709,7 +709,6 @@ try:
                 ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
                 
                 etapas_totales = len(df_pad_h9)
-                # Suma todos los CP logrados en la historia del PAD según la nueva lógica
                 if 'es_cp_tecnico' in df_pad_h9.columns:
                     cp_totales = df_pad_h9['es_cp_tecnico'].fillna(False).sum()
                 else:
@@ -729,17 +728,79 @@ try:
                 resumen_cp.append({
                     "Yacimiento": yac,
                     "PAD": pad,
-                    "Última Fecha": ultima_fecha,
                     "Etapas Acum.": etapas_totales,
                     "Total CP Logrados": cp_totales,
                     "% CP Final (PAD)": f"{pct_cp_final:.1f}%",
                     "Etapas STD": std,
                     "Etapas/Día (Real)": round(etapas_dia_real, 2),
-                    "Posibles CP (Total - 4)": etapas_posibles
+                    "Posibles CP (Total - 4)": etapas_posibles,
+                    "Última Fecha": ultima_fecha # <--- Fecha movida al final
                 })
             
-            df_resumen = pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=["Yacimiento", "PAD", "Última Fecha", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Posibles CP (Total - 4)"])
+            # Formateo del Cuadro 1
+            columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Posibles CP (Total - 4)", "Última Fecha"]
+            df_resumen = pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=columnas_cuadro1)
             st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+            
+            # ==========================================
+            # NUEVO: CUADRO 2 - RESUMEN POR YACIMIENTO
+            # ==========================================
+            st.subheader("Cuadro 2 - Resumen por Yacimiento")
+            resumen_yac = []
+            
+            for yac in sel_yac_c2:
+                # Nos aseguramos de sumar solo los PADs que están filtrados en pantalla
+                pads_del_yac = [p for p in sel_pad_c2 if p in df_h9[df_h9['Yacimiento'] == yac]['PAD'].unique()]
+                if not pads_del_yac: continue
+                
+                df_yac_h9 = df_h9[(df_h9['Yacimiento'] == yac) & (df_h9['PAD'].isin(pads_del_yac))]
+                df_yac_h2 = df_h2[(df_h2['Yacimiento'] == yac) & (df_h2['PAD'].isin(pads_del_yac))]
+                
+                if df_yac_h9.empty: continue
+                
+                # 1. Etapas Acumuladas del Yacimiento
+                etapas_totales_yac = len(df_yac_h9)
+                
+                # 2. Total de CP Realizados del Yacimiento
+                if 'es_cp_tecnico' in df_yac_h9.columns:
+                    cp_totales_yac = df_yac_h9['es_cp_tecnico'].fillna(False).sum()
+                else:
+                    cp_totales_yac = 0
+                
+                # 3. Cálculo de %CP Final (Matemática pura: Posibles sumadas de cada PAD)
+                posibles_yac = 0
+                for p in pads_del_yac:
+                    etapas_pad = len(df_yac_h9[df_yac_h9['PAD'] == p])
+                    posibles_yac += max(0, etapas_pad - 4)
+                    
+                pct_cp_yac = (cp_totales_yac / posibles_yac * 100) if posibles_yac > 0 else 0
+                
+                # 4. Etapas STD
+                std_yac = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
+                
+                # 5. Etapas/Día Real (Yacimiento)
+                if 'duracion_minutos' in df_yac_h2.columns:
+                    minutos_totales_yac = pd.to_numeric(df_yac_h2['duracion_minutos'], errors='coerce').sum()
+                else:
+                    minutos_totales_yac = 0
+                    
+                dias_reales_yac = minutos_totales_yac / 1440.0
+                etapas_dia_real_yac = (etapas_totales_yac / dias_reales_yac) if dias_reales_yac > 0 else 0
+                
+                # Guardamos la fila del Yacimiento
+                resumen_yac.append({
+                    "Yacimiento": yac,
+                    "Etapas Acumuladas": etapas_totales_yac,
+                    "Total CP Realizados": cp_totales_yac,
+                    "% CP Final (Yacimiento)": f"{pct_cp_yac:.1f}%",
+                    "Etapas STD": std_yac,
+                    "Etapas/Día (Yacimiento)": round(etapas_dia_real_yac, 2)
+                })
+                
+            # Formateo del Cuadro 2
+            columnas_cuadro2 = ["Yacimiento", "Etapas Acumuladas", "Total CP Realizados", "% CP Final (Yacimiento)", "Etapas STD", "Etapas/Día (Yacimiento)"]
+            df_resumen_yac = pd.DataFrame(resumen_yac) if resumen_yac else pd.DataFrame(columns=columnas_cuadro2)
+            st.dataframe(df_resumen_yac, use_container_width=True, hide_index=True)
 
 except Exception as e:
     st.error(f"❌ Ocurrió un error al procesar el tablero. Detalles: {e}")
