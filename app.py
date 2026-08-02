@@ -18,7 +18,7 @@ import json
 # ==========================================
 st.set_page_config(page_title="Dashboard Operativo", layout="wide", initial_sidebar_state="expanded")
 
-PIN_OPERATIVO = "XXX" # <--- CAMBIÁ EL PIN ACÁ
+PIN_OPERATIVO = "FRAC2026" # <--- CAMBIÁ EL PIN ACÁ
 
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
