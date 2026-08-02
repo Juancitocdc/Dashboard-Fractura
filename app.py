@@ -227,7 +227,7 @@ def descargar_y_procesar(url_tiempos, url_continuo):
     # 7. Genera el texto de la transición solo si fue un CP exitoso
     df_continuo['transicion_cp_con_nueva_logica_chequeo'] = np.where(df_continuo['es_cp_tecnico'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
     
-    columnas_h9 = ['fecha_reporte', 'secuencia_diaria', 'transicion_cp', 'fecha_hora_inicio', 'fecha_hora_fin', col_cp, 'Tiempo_entre_fin_e_inicio_de_nueva_fractura', 'Esta_cargado_correctamente?', 'transicion_cp_con_nueva_logica_chequeo', 'presion_final_3m [psi]', 'isip_post_frac [psi]']
+    columnas_h9 = ['fecha_reporte', 'secuencia_diaria', 'transicion_cp', 'fecha_hora_inicio', 'fecha_hora_fin', col_cp, 'Tiempo_entre_fin_e_inicio_de_nueva_fractura', 'es_cp_tecnico', 'Esta_cargado_correctamente?', 'transicion_cp_con_nueva_logica_chequeo', 'presion_final_3m [psi]', 'isip_post_frac [psi]']    
     cols_h9_final = [c for c in columnas_h9 if c in df_continuo.columns] + ['nombre_pozo', 'nro_etapa']
     df_hoja9 = df_continuo[cols_h9_final].copy()
     if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_hoja9.columns:
@@ -569,10 +569,13 @@ try:
                 df_dia_h9_inicio = df_c1_h9[df_c1_h9['fecha_reporte_cp'] == fecha]
                 
                 etapas_dia = len(df_dia_h9_fin)
-                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_dia_h9_inicio.columns:
-                    cp_dia = (pd.to_numeric(df_dia_h9_inicio['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5).sum() 
+                # Cuenta cuántas etapas de ese día específico cumplieron la nueva regla integral
+                if 'es_cp_tecnico' in df_dia_h9_inicio.columns:
+                    cp_dia = df_dia_h9_inicio['es_cp_tecnico'].fillna(False).sum() 
                 else:
                     cp_dia = 0
+
+                # ... (cálculo de acumulados) ...
 
                 if 'duracion_minutos' in df_dia_h2.columns:
                     minutos_dia = pd.to_numeric(df_dia_h2['duracion_minutos'], errors='coerce').sum()
@@ -616,12 +619,15 @@ try:
             df_gantt = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
             
             if not df_gantt.empty:
-                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_gantt.columns:
-                    df_gantt['Es_CP'] = pd.to_numeric(df_gantt['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5
+                # Usa directamente el veredicto del motor de procesamiento
+                if 'es_cp_tecnico' in df_gantt.columns:
+                    df_gantt['Es_CP'] = df_gantt['es_cp_tecnico'].fillna(False)
                 else:
                     df_gantt['Es_CP'] = False
                     
+                # Etiqueta para la leyenda del gráfico
                 df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Logró CP)', 'FRAC (Sin CP)')
+
                 df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
                 
                 fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
@@ -654,8 +660,8 @@ try:
 
             with col_t2:
                 st.subheader("Etapas que lograron CP")
-                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_c1_h9.columns:
-                    df_logrados = df_c1_h9[pd.to_numeric(df_c1_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5].copy()
+                if 'es_cp_tecnico' in df_c1_h9.columns:
+                    df_logrados = df_c1_h9[df_c1_h9['es_cp_tecnico'] == True].copy()
                 else:
                     df_logrados = pd.DataFrame()
                     
@@ -688,8 +694,9 @@ try:
                 ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
                 
                 etapas_totales = len(df_pad_h9)
-                if 'Tiempo_entre_fin_e_inicio_de_nueva_fractura' in df_pad_h9.columns:
-                    cp_totales = (pd.to_numeric(df_pad_h9['Tiempo_entre_fin_e_inicio_de_nueva_fractura'], errors='coerce') <= 5).sum()
+                # Suma todos los CP logrados en la historia del PAD según la nueva lógica
+                if 'es_cp_tecnico' in df_pad_h9.columns:
+                    cp_totales = df_pad_h9['es_cp_tecnico'].fillna(False).sum()
                 else:
                     cp_totales = 0
                     
