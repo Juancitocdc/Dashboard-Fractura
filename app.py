@@ -793,7 +793,8 @@ try:
             with col_t1:
                 st.subheader("Listado de Transiciones")
                 if 'transicion_cp_con_nueva_logica_chequeo' in df_c1_h9.columns:
-                    df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy()
+                    # NUEVO: Agregamos .sort_values('fecha_hora_inicio') al final
+                    df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy().sort_values('fecha_hora_inicio')
                 else:
                     df_trans = pd.DataFrame()
                     
@@ -805,11 +806,21 @@ try:
                 st.dataframe(tabla1, use_container_width=True, hide_index=True)
 
             with col_t2:
-                st.subheader("Etapas con Continous Pumping")
+                st.subheader("Etapas con Continuous Pumping")
                 if 'es_cp_tecnico' in df_c1_h9.columns:
-                    df_logrados = df_c1_h9[df_c1_h9['es_cp_tecnico'] == True].copy()
+                    # NUEVO: Agregamos .sort_values('fecha_hora_inicio') al final
+                    df_logrados = df_c1_h9[df_c1_h9['es_cp_tecnico'] == True].copy().sort_values('fecha_hora_inicio')
                 else:
                     df_logrados = pd.DataFrame()
+                    
+                tabla2 = pd.DataFrame({
+                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_logrados.empty else [],
+                    "Pozo": df_logrados['nombre_pozo'] if not df_logrados.empty else [],
+                    "Etapa Nro": df_logrados['nro_etapa'].fillna(0).astype(int) if not df_logrados.empty else [],
+                    "Secuencia Diaria": df_logrados['secuencia_diaria'].fillna(0).astype(int) if not df_logrados.empty else []
+                })
+                if tabla2.empty: tabla2 = pd.DataFrame(columns=["Fecha de Reporte", "Pozo", "Etapa Nro", "Secuencia Diaria"])
+                st.dataframe(tabla2, use_container_width=True, hide_index=True)
                     
                 tabla2 = pd.DataFrame({
                     "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_logrados.empty else [],
