@@ -822,14 +822,6 @@ try:
                 if tabla2.empty: tabla2 = pd.DataFrame(columns=["Fecha de Reporte", "Pozo", "Etapa Nro", "Secuencia Diaria"])
                 st.dataframe(tabla2, use_container_width=True, hide_index=True)
                     
-                tabla2 = pd.DataFrame({
-                    "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_logrados.empty else [],
-                    "Pozo": df_logrados['nombre_pozo'] if not df_logrados.empty else [],
-                    "Etapa Nro": df_logrados['nro_etapa'].fillna(0).astype(int) if not df_logrados.empty else [],
-                    "Secuencia Diaria": df_logrados['secuencia_diaria'].fillna(0).astype(int) if not df_logrados.empty else []
-                })
-                if tabla2.empty: tabla2 = pd.DataFrame(columns=["Fecha de Reporte", "Pozo", "Etapa Nro", "Secuencia Diaria"])
-                st.dataframe(tabla2, use_container_width=True, hide_index=True)
 
         with tab4:
             st.subheader("Cuadro 1 - Foto Final por PAD")
