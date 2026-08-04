@@ -799,7 +799,7 @@ try:
                     df_trans = pd.DataFrame()
                     
                 tabla1 = pd.DataFrame({
-                    "Fecha": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_trans.empty else [],
+                    "Fecha de Reporte": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_trans.empty else [],
                     "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo'] if not df_trans.empty else []
                 })
                 if tabla1.empty: tabla1 = pd.DataFrame(columns=["Fecha", "Transición (Pozo/Etapa)"])
