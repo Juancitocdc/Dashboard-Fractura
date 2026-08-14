@@ -699,6 +699,70 @@ try:
     elif seccion == "🔄 Sección 2: Continuous Pumping":
         st.title("🔄 Continuous Pumping")
         
+        # --- NUEVA LÓGICA: CRUCE DE BOMBEO VS NPT ---
+        def obtener_intervalos_netos(df_pumping, df_npt):
+            if df_pumping.empty: return []
+            
+            # 1. Unir intervalos de bombeo
+            int_pump = df_pumping[['overlap_inicio', 'overlap_fin']].sort_values('overlap_inicio').values.tolist()
+            merged_pump = [int_pump[0]]
+            for actual in int_pump[1:]:
+                prev = merged_pump[-1]
+                if actual[0] <= prev[1]:
+                    merged_pump[-1] = [prev[0], max(prev[1], actual[1])]
+                else:
+                    merged_pump.append(actual)
+                    
+            # 2. Unir intervalos de NPT
+            if df_npt is None or df_npt.empty:
+                return merged_pump
+                
+            df_npt = df_npt.copy()
+            df_npt['fecha_inicio'] = pd.to_datetime(df_npt['fecha_inicio'], errors='coerce')
+            df_npt['fecha_fin'] = pd.to_datetime(df_npt['fecha_fin'], errors='coerce')
+            df_npt_val = df_npt.dropna(subset=['fecha_inicio', 'fecha_fin']).sort_values('fecha_inicio')
+            
+            if df_npt_val.empty: return merged_pump
+            
+            int_npt = df_npt_val[['fecha_inicio', 'fecha_fin']].values.tolist()
+            merged_npt = [int_npt[0]]
+            for actual in int_npt[1:]:
+                prev = merged_npt[-1]
+                if actual[0] <= prev[1]:
+                    merged_npt[-1] = [prev[0], max(prev[1], actual[1])]
+                else:
+                    merged_npt.append(actual)
+                    
+            # 3. Hachazo: Restar NPTs rompiendo los intervalos de bombeo
+            net_intervals = []
+            for p_start, p_end in merged_pump:
+                current_start = p_start
+                for n_start, n_end in merged_npt:
+                    if n_end <= current_start:
+                        continue
+                    if n_start >= p_end:
+                        break # Ya pasó el overlap
+                    
+                    if n_start > current_start:
+                        net_intervals.append([current_start, n_start])
+                    
+                    current_start = max(current_start, n_end)
+                
+                if current_start < p_end:
+                    net_intervals.append([current_start, p_end])
+                    
+            return net_intervals
+
+        def calcular_minutos_netos(df_pumping, df_npt):
+            intervalos = obtener_intervalos_netos(df_pumping, df_npt)
+            return sum((f - i).total_seconds() for i, f in intervalos) / 60.0
+
+        def calcular_max_continuo(df_pumping, df_npt):
+            intervalos = obtener_intervalos_netos(df_pumping, df_npt)
+            if not intervalos: return 0
+            return max((f - i).total_seconds() for i, f in intervalos) / 60.0
+        # -----------------------------------------------------------
+        
         if 'fecha_reporte' in df_h9.columns and not df_h9.empty:
             idx_max_h9 = pd.to_datetime(df_h9['fecha_reporte'], errors='coerce').idxmax()
             yac_def_c = df_h9.loc[idx_max_h9, 'Yacimiento'] if pd.notna(idx_max_h9) else "S/D"
@@ -722,7 +786,6 @@ try:
             pad_idx_c = pads_disp.index(pad_def_c) if (sel_yac_c1 == yac_def_c and pad_def_c in pads_disp) else 0
             with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp, index=pad_idx_c)
             
-            # --- FIX: ORDEN CRONOLÓGICO ESTRICTO Y ELIMINACIÓN DE DUPLICADOS ---
             df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].copy()
             df_c1_h9 = df_c1_h9.sort_values('fecha_hora_inicio').drop_duplicates(subset=['nombre_pozo', 'nro_etapa', 'fecha_hora_inicio'])
             
@@ -742,7 +805,6 @@ try:
             else:
                 f_inicio_c1, f_fin_c1 = fechas_c1[0], fechas_c1[0]
             
-            # --- DEFINICIÓN CORRECTA DE BLOQUES DE CP ---
             df_c1_h9['bloque_id'] = (~df_c1_h9['es_cp_tecnico'].fillna(False)).cumsum()
             bloque_stats = df_c1_h9.groupby('bloque_id').agg(etapas_en_bloque=('nro_etapa', 'count')).reset_index()
             df_c1_h9 = df_c1_h9.merge(bloque_stats, on='bloque_id', how='left')
@@ -758,6 +820,9 @@ try:
             fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) 
             
             std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
+            
+            # Filtramos todos los NPT del PAD de la Hoja 2 para cruzar
+            df_npt_pad = df_c1_h2[df_c1_h2['es_npt'] == True].copy() if 'es_npt' in df_c1_h2.columns else pd.DataFrame()
             
             datos_cp = []
             acum_etapas_fin = 0
@@ -791,7 +856,7 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # --- TIJERETAZO MATEMÁTICO (CORTE ESTRICTO A LAS 06:00) ---
+                # --- TIJERETAZO (24hs) + RECORTE DE NPT ---
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
@@ -804,17 +869,22 @@ try:
                     
                     df_hoy = df_tiempos[df_tiempos['minutos_en_ventana'] > 0].copy()
                     
-                    tiempo_bombeo_dia = df_hoy['minutos_en_ventana'].sum() / 60
-                    tiempo_total_cp_dia = df_hoy.loc[df_hoy['es_bloque_cp'], 'minutos_en_ventana'].sum() / 60
-                    
-                    if not df_hoy[df_hoy['es_bloque_cp']].empty:
-                        max_tiempo_cp_dia = df_hoy[df_hoy['es_bloque_cp']].groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60
+                    if not df_hoy.empty:
+                        # Calculamos los tiempos REales descontando cualquier NPT solapado
+                        tiempo_bombeo_dia = calcular_minutos_netos(df_hoy, df_npt_pad) / 60
+                        
+                        df_cp_hoy = df_hoy[df_hoy['es_bloque_cp']]
+                        tiempo_total_cp_dia = calcular_minutos_netos(df_cp_hoy, df_npt_pad) / 60
+                        
+                        if not df_cp_hoy.empty:
+                            # Corta el récord si el NPT partió el bloque en dos
+                            max_tiempo_cp_dia = df_cp_hoy.groupby('bloque_id').apply(lambda x: calcular_max_continuo(x, df_npt_pad)).max() / 60
+                        else:
+                            max_tiempo_cp_dia = 0
                     else:
-                        max_tiempo_cp_dia = 0
+                        tiempo_bombeo_dia, tiempo_total_cp_dia, max_tiempo_cp_dia = 0, 0, 0
                 else:
-                    tiempo_bombeo_dia = 0
-                    tiempo_total_cp_dia = 0
-                    max_tiempo_cp_dia = 0
+                    tiempo_bombeo_dia, tiempo_total_cp_dia, max_tiempo_cp_dia = 0, 0, 0
                 
                 datos_cp.append({
                     "Fecha Reporte": pd.to_datetime(fecha).strftime('%d/%m/%Y'),
@@ -852,15 +922,9 @@ try:
             
             if not df_gantt.empty:
                 df_gantt = df_gantt.sort_values('fecha_hora_inicio')
-                
-                if 'es_cp_tecnico' in df_gantt.columns:
-                    df_gantt['Es_CP'] = df_gantt['es_cp_tecnico'].fillna(False)
-                else:
-                    df_gantt['Es_CP'] = False
-                    
+                df_gantt['Es_CP'] = df_gantt['es_cp_tecnico'].fillna(False) if 'es_cp_tecnico' in df_gantt.columns else False
                 df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
                 df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
-                
                 df_gantt['Inicio_str'] = df_gantt['fecha_hora_inicio'].dt.strftime('%d/%m/%Y %H:%M')
                 df_gantt['Fin_str'] = df_gantt['fecha_hora_fin'].dt.strftime('%d/%m/%Y %H:%M')
                 
@@ -869,18 +933,13 @@ try:
                                   color_discrete_map={"FRAC (Con CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
                                   custom_data=['nombre_pozo', 'Etapa Nro', 'Inicio_str', 'Fin_str'])
                 
-                fig.update_traces(
-                    hovertemplate="<b>%{customdata[0]} - Etapa %{customdata[1]}</b><br>" +
-                                  "Inicio de Fractura = %{customdata[2]}<br>" +
-                                  "Fin de Fractura = %{customdata[3]}<extra></extra>"
-                )
-                
+                fig.update_traces(hovertemplate="<b>%{customdata[0]} - Etapa %{customdata[1]}</b><br>Inicio = %{customdata[2]}<br>Fin = %{customdata[3]}<extra></extra>")
                 fig.update_layout(barmode='overlay', legend_title_text="Telemetría de Bombeo")
                 fig.update_yaxes(autorange="reversed", type='category')
                 
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("⚠️ No hay datos de bombeo para el rango de fechas seleccionado.")
+                st.warning("⚠️ No hay datos de bombeo para el rango seleccionado.")
             
             col_t1, col_t2 = st.columns(2)
             
@@ -891,13 +950,12 @@ try:
                     df_trans = df_trans[(pd.to_datetime(df_trans['fecha_reporte_cp']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_trans['fecha_reporte_cp']).dt.date <= f_fin_c1)]
                 else:
                     df_trans = pd.DataFrame()
-                    
+                
                 tabla1 = pd.DataFrame({
                     "Fecha de Reporte": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_trans.empty else [],
                     "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo'] if not df_trans.empty else []
                 })
-                if tabla1.empty: tabla1 = pd.DataFrame(columns=["Fecha de Reporte", "Transición (Pozo/Etapa)"])
-                st.dataframe(tabla1, use_container_width=True, hide_index=True)
+                st.dataframe(tabla1 if not tabla1.empty else pd.DataFrame(columns=["Fecha de Reporte", "Transición (Pozo/Etapa)"]), use_container_width=True, hide_index=True)
 
             with col_t2:
                 st.subheader("Etapas con Continuous Pumping")
@@ -906,15 +964,14 @@ try:
                     df_logrados = df_logrados[(pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.date <= f_fin_c1)]
                 else:
                     df_logrados = pd.DataFrame()
-                    
+                
                 tabla2 = pd.DataFrame({
                     "Fecha de Reporte": pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_logrados.empty else [],
                     "Pozo": df_logrados['nombre_pozo'] if not df_logrados.empty else [],
                     "Etapa Nro": df_logrados['nro_etapa'].fillna(0).astype(int) if not df_logrados.empty else [],
                     "Secuencia Diaria": df_logrados['secuencia_diaria'].fillna(0).astype(int) if not df_logrados.empty else []
                 })
-                if tabla2.empty: tabla2 = pd.DataFrame(columns=["Fecha de Reporte", "Pozo", "Etapa Nro", "Secuencia Diaria"])
-                st.dataframe(tabla2, use_container_width=True, hide_index=True)
+                st.dataframe(tabla2 if not tabla2.empty else pd.DataFrame(columns=["Fecha de Reporte", "Pozo", "Etapa Nro", "Secuencia Diaria"]), use_container_width=True, hide_index=True)
 
         with tab4:
             st.subheader("Cuadro 1 - Foto Final por PAD")
@@ -930,12 +987,13 @@ try:
             resumen_cp = []
             
             for pad in sel_pad_c2:
-                # --- FIX: ORDEN CRONOLÓGICO Y DUPLICADOS EN CUADRO GERENCIAL ---
                 df_pad_h9 = df_h9[df_h9['PAD'] == pad].copy()
                 if df_pad_h9.empty: continue
                 df_pad_h9 = df_pad_h9.sort_values('fecha_hora_inicio').drop_duplicates(subset=['nombre_pozo', 'nro_etapa', 'fecha_hora_inicio'])
-                
                 df_pad_h2 = df_h2[df_h2['PAD'] == pad].copy()
+                
+                # NPTs para este PAD
+                df_npt_gerencial = df_pad_h2[df_pad_h2['es_npt'] == True].copy() if 'es_npt' in df_pad_h2.columns else pd.DataFrame()
                 
                 df_pad_h9['bloque_id'] = (~df_pad_h9['es_cp_tecnico'].fillna(False)).cumsum()
                 b_stats = df_pad_h9.groupby('bloque_id').agg(etapas_en_bloque=('nro_etapa', 'count')).reset_index()
@@ -950,7 +1008,6 @@ try:
                 
                 etapas_totales = len(df_pad_h9)
                 cp_totales = df_pad_h9['es_cp_tecnico'].fillna(False).sum() if 'es_cp_tecnico' in df_pad_h9.columns else 0
-                
                 etapas_posibles = max(0, etapas_totales - 4)
                 pct_cp_final = (cp_totales / etapas_posibles * 100) if etapas_posibles > 0 else 0
                 
@@ -972,20 +1029,23 @@ try:
                     inv = pd.to_datetime(f) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                     fnv = pd.to_datetime(f) + pd.Timedelta(hours=6)
                     
-                    ov_ini = np.maximum(df_pad_h9['fecha_hora_inicio'], inv)
-                    ov_fin = np.minimum(df_pad_h9['fecha_hora_fin'], fnv)
-                    mins_v = (ov_fin - ov_ini).dt.total_seconds() / 60
+                    df_tiempos = df_pad_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin']).copy()
+                    if df_tiempos.empty: continue
+                        
+                    df_tiempos['overlap_inicio'] = np.maximum(df_tiempos['fecha_hora_inicio'], inv)
+                    df_tiempos['overlap_fin'] = np.minimum(df_tiempos['fecha_hora_fin'], fnv)
+                    df_tiempos['minutos_en_ventana'] = (df_tiempos['overlap_fin'] - df_tiempos['overlap_inicio']).dt.total_seconds() / 60
                     
-                    df_cp_hoy = df_pad_h9[mins_v > 0].copy()
+                    df_cp_hoy = df_tiempos[df_tiempos['minutos_en_ventana'] > 0].copy()
                     
                     if not df_cp_hoy.empty:
-                        df_cp_hoy['mins_hoy'] = mins_v[mins_v > 0]
-                        tiempo_bombeo_pad += df_cp_hoy['mins_hoy'].sum() / 60
-                        tiempo_total_cp_pad += df_cp_hoy.loc[df_cp_hoy['es_bloque_cp'], 'mins_hoy'].sum() / 60
+                        tiempo_bombeo_pad += calcular_minutos_netos(df_cp_hoy, df_npt_gerencial) / 60
                         
                         df_bloques_hoy = df_cp_hoy[df_cp_hoy['es_bloque_cp']]
+                        tiempo_total_cp_pad += calcular_minutos_netos(df_bloques_hoy, df_npt_gerencial) / 60
+                        
                         if not df_bloques_hoy.empty:
-                            max_dia = df_bloques_hoy.groupby('bloque_id')['mins_hoy'].sum().max() / 60
+                            max_dia = df_bloques_hoy.groupby('bloque_id').apply(lambda x: calcular_max_continuo(x, df_npt_gerencial)).max() / 60
                             if max_dia > max_cp_diario_pad:
                                 max_cp_diario_pad = max_dia
                 
@@ -1005,12 +1065,8 @@ try:
                 })
             
             columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Máx. Diario CP (hr)", "Posibles CP (Total - 4)", "Última Fecha"]
-            df_resumen = pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=columnas_cuadro1)
-            st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=columnas_cuadro1), use_container_width=True, hide_index=True)
             
-            # ==========================================
-            # CUADRO 2 - RESUMEN POR YACIMIENTO
-            # ==========================================
             st.subheader("Cuadro 2 - Resumen por Yacimiento")
             resumen_yac = []
             
@@ -1018,7 +1074,9 @@ try:
                 pads_del_yac = [p for p in sel_pad_c2 if p in df_h9[df_h9['Yacimiento'] == yac]['PAD'].unique()]
                 if not pads_del_yac: continue
                 
-                # Aprovechamos el cuadro de PADs ya pre-calculado para sumar
+                df_yac_h9 = df_h9[(df_h9['Yacimiento'] == yac) & (df_h9['PAD'].isin(pads_del_yac))].copy()
+                if df_yac_h9.empty: continue
+                
                 tiempo_bombeo_yac = 0
                 tiempo_total_cp_yac = 0
                 max_cp_diario_yac = 0
@@ -1061,8 +1119,7 @@ try:
                 })
                 
             columnas_cuadro2 = ["Yacimiento", "Etapas Acumuladas", "Total CP Realizados", "% CP Final (Yacimiento)", "Etapas STD", "Etapas/Día (Yacimiento)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Máx. Diario CP (hr)"]
-            df_resumen_yac = pd.DataFrame(resumen_yac) if resumen_yac else pd.DataFrame(columns=columnas_cuadro2)
-            st.dataframe(df_resumen_yac, use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(resumen_yac) if resumen_yac else pd.DataFrame(columns=columnas_cuadro2), use_container_width=True, hide_index=True)
 
 except Exception as e:
     st.error(f"❌ Ocurrió un error al procesar el tablero. Detalles: {e}")
