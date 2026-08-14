@@ -676,7 +676,6 @@ try:
     elif seccion == "🔄 Sección 2: Continuous Pumping":
         st.title("🔄 Continuous Pumping")
         
-        # --- NUEVO: Buscamos el PAD más reciente para setearlo por defecto ---
         if 'fecha_reporte' in df_h9.columns and not df_h9.empty:
             idx_max_h9 = pd.to_datetime(df_h9['fecha_reporte'], errors='coerce').idxmax()
             yac_def_c = df_h9.loc[idx_max_h9, 'Yacimiento'] if pd.notna(idx_max_h9) else "S/D"
@@ -703,25 +702,11 @@ try:
             df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].sort_values('fecha_reporte').copy()
             df_c1_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
-            # ========================================================
-            # NUEVO: PRECALCULO DE BLOQUES Y TIEMPOS PARA EL PAD
-            # ========================================================
-            if 'fecha_hora_inicio' in df_c1_h9.columns and 'fecha_hora_fin' in df_c1_h9.columns:
-                df_c1_h9['Bombeo_Total_min'] = (pd.to_datetime(df_c1_h9['fecha_hora_fin']) - pd.to_datetime(df_c1_h9['fecha_hora_inicio'])).dt.total_seconds() / 60
-            else:
-                df_c1_h9['Bombeo_Total_min'] = 0
-
-            # El cumsum con negación genera un ID único para cada ráfaga de CP
+            # --- DEFINICIÓN DE BLOQUES DE CONTINUOUS PUMPING ---
             df_c1_h9['bloque_id'] = (~df_c1_h9['es_cp_tecnico'].fillna(False)).cumsum()
-            
-            bloque_stats = df_c1_h9.groupby('bloque_id').agg(
-                etapas_en_bloque=('nro_etapa', 'count'),
-                horas_bloque=('Bombeo_Total_min', lambda x: x.sum() / 60)
-            ).reset_index()
-            
+            bloque_stats = df_c1_h9.groupby('bloque_id').agg(etapas_en_bloque=('nro_etapa', 'count')).reset_index()
             df_c1_h9 = df_c1_h9.merge(bloque_stats, on='bloque_id', how='left')
             df_c1_h9['es_bloque_cp'] = df_c1_h9['etapas_en_bloque'] > 1
-            # ========================================================
 
             df_c1_h9['fecha_reporte'] = pd.to_datetime(df_c1_h9['fecha_reporte']).dt.date
             df_c1_h9['fecha_reporte_cp'] = pd.to_datetime(df_c1_h9['fecha_reporte_cp']).dt.date
@@ -737,28 +722,18 @@ try:
             datos_cp = []
             acum_etapas_fin = 0
             acum_cp = 0
-            acum_minutos_totales = 0
             posibles_acum_ayer = 0
             
             for fecha in fechas_pad:
+                # 1. Filtros de etapas contadas
                 df_dia_h9_fin = df_c1_h9[df_c1_h9['fecha_reporte'] == fecha]
-                df_dia_h2 = df_c1_h2[df_c1_h2['fecha_reporte'] == fecha]
                 df_dia_h9_inicio = df_c1_h9[df_c1_h9['fecha_reporte_cp'] == fecha]
                 
                 etapas_dia = len(df_dia_h9_fin)
-                if 'es_cp_tecnico' in df_dia_h9_inicio.columns:
-                    cp_dia = df_dia_h9_inicio['es_cp_tecnico'].fillna(False).sum() 
-                else:
-                    cp_dia = 0
-
-                if 'duracion_minutos' in df_dia_h2.columns:
-                    minutos_dia = pd.to_numeric(df_dia_h2['duracion_minutos'], errors='coerce').sum()
-                else:
-                    minutos_dia = 0
+                cp_dia = df_dia_h9_inicio['es_cp_tecnico'].fillna(False).sum() if 'es_cp_tecnico' in df_dia_h9_inicio.columns else 0
                 
                 acum_etapas_fin += etapas_dia
                 acum_cp += cp_dia
-                acum_minutos_totales += minutos_dia
                 
                 posibles_acum_hoy = max(0, acum_etapas_fin - 4)
                 posibles_dia = posibles_acum_hoy - posibles_acum_ayer
@@ -766,14 +741,33 @@ try:
                 pct_cp_dia = (cp_dia / posibles_dia * 100) if posibles_dia > 0 else 0
                 pct_cp_pad = (acum_cp / posibles_acum_hoy * 100) if posibles_acum_hoy > 0 else 0
                 
-                dias_reales = acum_minutos_totales / 1440.0
-                etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
+                # 2. EL TIJERETAZO MATEMÁTICO (Ventana de 24hs)
+                inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
+                fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
-                # --- NUEVAS VARIABLES DE HORAS ---
-                tiempo_bombeo_dia = df_dia_h9_fin['Bombeo_Total_min'].sum() / 60
-                tiempo_total_cp_dia = df_dia_h9_fin.loc[df_dia_h9_fin['es_bloque_cp'], 'Bombeo_Total_min'].sum() / 60
-                max_tiempo_cp_dia = df_dia_h9_fin.loc[df_dia_h9_fin['es_bloque_cp'], 'horas_bloque'].max()
-                if pd.isna(max_tiempo_cp_dia): max_tiempo_cp_dia = 0
+                df_tiempos = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin']).copy()
+                
+                if not df_tiempos.empty:
+                    # Calcula solo los minutos que caen estrictamente adentro de estas 24 horas
+                    df_tiempos['overlap_inicio'] = np.maximum(df_tiempos['fecha_hora_inicio'], inicio_ventana)
+                    df_tiempos['overlap_fin'] = np.minimum(df_tiempos['fecha_hora_fin'], fin_ventana)
+                    df_tiempos['minutos_en_ventana'] = (df_tiempos['overlap_fin'] - df_tiempos['overlap_inicio']).dt.total_seconds() / 60
+                    
+                    df_hoy = df_tiempos[df_tiempos['minutos_en_ventana'] > 0].copy()
+                    
+                    tiempo_bombeo_dia = df_hoy['minutos_en_ventana'].sum() / 60
+                    tiempo_total_cp_dia = df_hoy.loc[df_hoy['es_bloque_cp'], 'minutos_en_ventana'].sum() / 60
+                    
+                    if not df_hoy[df_hoy['es_bloque_cp']].empty:
+                        max_tiempo_cp_dia = df_hoy[df_hoy['es_bloque_cp']].groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60
+                    else:
+                        max_tiempo_cp_dia = 0
+                else:
+                    tiempo_bombeo_dia = 0
+                    tiempo_total_cp_dia = 0
+                    max_tiempo_cp_dia = 0
+
+                etapas_por_dia_real = (etapas_dia / (tiempo_bombeo_dia / 24)) if tiempo_bombeo_dia > 0 else 0
                 
                 datos_cp.append({
                     "Fecha Reporte": pd.to_datetime(fecha).strftime('%d/%m/%Y'),
@@ -869,7 +863,6 @@ try:
             st.subheader("Cuadro 1 - Foto Final por PAD")
             col_m3, col_m4 = st.columns(2)
             
-            # --- Pre-fill de Multiselects ---
             def_yacs = [yac_def_c] if yac_def_c != "S/D" else yacimientos_disp
             with col_m3: sel_yac_c2 = st.multiselect("Seleccionar Yacimiento(s) (C2):", yacimientos_disp, default=def_yacs)
             
@@ -878,32 +871,17 @@ try:
             with col_m4: sel_pad_c2 = st.multiselect("Seleccionar PAD(s) (C2):", pads_disp_c2, default=def_pads)
             
             resumen_cp = []
+            
+            # --- LOOP DE PADS (CUADRO GERENCIAL) ---
             for pad in sel_pad_c2:
                 df_pad_h9 = df_h9[df_h9['PAD'] == pad].copy()
-                df_pad_h2 = df_h2[df_h2['PAD'] == pad].copy()
                 if df_pad_h9.empty: continue
                 
-                # --- PRECALCULO PARA CUADRO GERENCIAL PAD ---
-                if 'fecha_hora_inicio' in df_pad_h9.columns and 'fecha_hora_fin' in df_pad_h9.columns:
-                    df_pad_h9['Bombeo_Total_min'] = (pd.to_datetime(df_pad_h9['fecha_hora_fin']) - pd.to_datetime(df_pad_h9['fecha_hora_inicio'])).dt.total_seconds() / 60
-                else:
-                    df_pad_h9['Bombeo_Total_min'] = 0
-
                 df_pad_h9['bloque_id'] = (~df_pad_h9['es_cp_tecnico'].fillna(False)).cumsum()
-                bloque_stats = df_pad_h9.groupby('bloque_id').agg(
-                    etapas_en_bloque=('nro_etapa', 'count'),
-                    horas_bloque=('Bombeo_Total_min', lambda x: x.sum() / 60)
-                ).reset_index()
-                
-                df_pad_h9 = df_pad_h9.merge(bloque_stats, on='bloque_id', how='left')
+                b_stats = df_pad_h9.groupby('bloque_id').agg(etapas_en_bloque=('nro_etapa', 'count')).reset_index()
+                df_pad_h9 = df_pad_h9.merge(b_stats, on='bloque_id', how='left')
                 df_pad_h9['es_bloque_cp'] = df_pad_h9['etapas_en_bloque'] > 1
                 
-                tiempo_bombeo_pad = df_pad_h9['Bombeo_Total_min'].sum() / 60
-                tiempo_total_cp_pad = df_pad_h9.loc[df_pad_h9['es_bloque_cp'], 'Bombeo_Total_min'].sum() / 60
-                max_tiempo_cp_pad = df_pad_h9.loc[df_pad_h9['es_bloque_cp'], 'horas_bloque'].max()
-                if pd.isna(max_tiempo_cp_pad): max_tiempo_cp_pad = 0
-                # --------------------------------------------
-
                 yac = df_pad_h9['Yacimiento'].iloc[0]
                 std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
                 
@@ -911,21 +889,41 @@ try:
                 ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
                 
                 etapas_totales = len(df_pad_h9)
-                if 'es_cp_tecnico' in df_pad_h9.columns:
-                    cp_totales = df_pad_h9['es_cp_tecnico'].fillna(False).sum()
-                else:
-                    cp_totales = 0
-                    
-                if 'duracion_minutos' in df_pad_h2.columns:
-                    minutos_totales = pd.to_numeric(df_pad_h2['duracion_minutos'], errors='coerce').sum()
-                else:
-                    minutos_totales = 0
+                cp_totales = df_pad_h9['es_cp_tecnico'].fillna(False).sum() if 'es_cp_tecnico' in df_pad_h9.columns else 0
                 
                 etapas_posibles = max(0, etapas_totales - 4)
                 pct_cp_final = (cp_totales / etapas_posibles * 100) if etapas_posibles > 0 else 0
                 
-                dias_reales = minutos_totales / 1440.0
-                etapas_dia_real = (etapas_totales / dias_reales) if dias_reales > 0 else 0
+                # Para sacar los acumulados exactos, procesamos todos los días del PAD con la ventana de 24hs
+                fechas_unicas = set(df_pad_h9['fecha_reporte'].dropna())
+                
+                tiempo_bombeo_pad = 0
+                tiempo_total_cp_pad = 0
+                max_cp_diario_pad = 0
+                
+                for f in fechas_unicas:
+                    inv = pd.to_datetime(f) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
+                    fnv = pd.to_datetime(f) + pd.Timedelta(hours=6)
+                    
+                    ov_ini = np.maximum(df_pad_h9['fecha_hora_inicio'], inv)
+                    ov_fin = np.minimum(df_pad_h9['fecha_hora_fin'], fnv)
+                    mins_v = (ov_fin - ov_ini).dt.total_seconds() / 60
+                    
+                    # Filtramos las etapas de este día exacto
+                    df_cp_hoy = df_pad_h9[mins_v > 0].copy()
+                    
+                    if not df_cp_hoy.empty:
+                        df_cp_hoy['mins_hoy'] = mins_v[mins_v > 0]
+                        tiempo_bombeo_pad += df_cp_hoy['mins_hoy'].sum() / 60
+                        tiempo_total_cp_pad += df_cp_hoy.loc[df_cp_hoy['es_bloque_cp'], 'mins_hoy'].sum() / 60
+                        
+                        df_bloques_hoy = df_cp_hoy[df_cp_hoy['es_bloque_cp']]
+                        if not df_bloques_hoy.empty:
+                            max_dia = df_bloques_hoy.groupby('bloque_id')['mins_hoy'].sum().max() / 60
+                            if max_dia > max_cp_diario_pad:
+                                max_cp_diario_pad = max_dia
+                
+                etapas_dia_real = (etapas_totales / (tiempo_bombeo_pad / 24)) if tiempo_bombeo_pad > 0 else 0
                 
                 resumen_cp.append({
                     "Yacimiento": yac,
@@ -937,12 +935,12 @@ try:
                     "Etapas/Día (Real)": round(etapas_dia_real, 2),
                     "Tiempo de Bombeo (hr)": round(tiempo_bombeo_pad, 2),
                     "Tiempo Total de Bombeo Continuo (hr)": round(tiempo_total_cp_pad, 2),
-                    "Maximo Tiempo de Bombeo Continuo (hr)": round(max_tiempo_cp_pad, 2),
+                    "Máx. Diario CP (hr)": round(max_cp_diario_pad, 2),
                     "Posibles CP (Total - 4)": etapas_posibles,
                     "Última Fecha": ultima_fecha
                 })
             
-            columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo (hr)", "Posibles CP (Total - 4)", "Última Fecha"]
+            columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Máx. Diario CP (hr)", "Posibles CP (Total - 4)", "Última Fecha"]
             df_resumen = pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=columnas_cuadro1)
             st.dataframe(df_resumen, use_container_width=True, hide_index=True)
             
@@ -957,58 +955,31 @@ try:
                 if not pads_del_yac: continue
                 
                 df_yac_h9 = df_h9[(df_h9['Yacimiento'] == yac) & (df_h9['PAD'].isin(pads_del_yac))].copy()
-                df_yac_h2 = df_h2[(df_h2['Yacimiento'] == yac) & (df_h2['PAD'].isin(pads_del_yac))].copy()
                 if df_yac_h9.empty: continue
                 
-                # --- PRECALCULO PARA CUADRO GERENCIAL YACIMIENTO ---
+                # Consolidamos iterando los PADs precalculados
                 tiempo_bombeo_yac = 0
                 tiempo_total_cp_yac = 0
-                max_tiempo_cp_yac = 0
+                max_cp_diario_yac = 0
                 
-                for p in pads_del_yac:
-                    df_p = df_yac_h9[df_yac_h9['PAD'] == p].copy()
-                    if 'fecha_hora_inicio' in df_p.columns and 'fecha_hora_fin' in df_p.columns:
-                        df_p['Bombeo_Total_min'] = (pd.to_datetime(df_p['fecha_hora_fin']) - pd.to_datetime(df_p['fecha_hora_inicio'])).dt.total_seconds() / 60
-                    else:
-                        df_p['Bombeo_Total_min'] = 0
-                        
-                    df_p['bloque_id'] = (~df_p['es_cp_tecnico'].fillna(False)).cumsum()
-                    b_stats = df_p.groupby('bloque_id').agg(
-                        etapas_en_bloque=('nro_etapa', 'count'),
-                        horas_bloque=('Bombeo_Total_min', lambda x: x.sum() / 60)
-                    ).reset_index()
-                    df_p = df_p.merge(b_stats, on='bloque_id', how='left')
-                    df_p['es_bloque_cp'] = df_p['etapas_en_bloque'] > 1
-                    
-                    tiempo_bombeo_yac += df_p['Bombeo_Total_min'].sum() / 60
-                    tiempo_total_cp_yac += df_p.loc[df_p['es_bloque_cp'], 'Bombeo_Total_min'].sum() / 60
-                    
-                    max_p = df_p.loc[df_p['es_bloque_cp'], 'horas_bloque'].max()
-                    if pd.notna(max_p) and max_p > max_tiempo_cp_yac:
-                        max_tiempo_cp_yac = max_p
-                # ---------------------------------------------------
+                for pad_data in resumen_cp:
+                    if pad_data["Yacimiento"] == yac and pad_data["PAD"] in pads_del_yac:
+                        tiempo_bombeo_yac += pad_data["Tiempo de Bombeo (hr)"]
+                        tiempo_total_cp_yac += pad_data["Tiempo Total de Bombeo Continuo (hr)"]
+                        if pad_data["Máx. Diario CP (hr)"] > max_cp_diario_yac:
+                            max_cp_diario_yac = pad_data["Máx. Diario CP (hr)"]
                 
                 etapas_totales_yac = len(df_yac_h9)
-                if 'es_cp_tecnico' in df_yac_h9.columns:
-                    cp_totales_yac = df_yac_h9['es_cp_tecnico'].fillna(False).sum()
-                else:
-                    cp_totales_yac = 0
+                cp_totales_yac = df_yac_h9['es_cp_tecnico'].fillna(False).sum() if 'es_cp_tecnico' in df_yac_h9.columns else 0
                 
                 posibles_yac = 0
                 for p in pads_del_yac:
-                    etapas_pad = len(df_yac_h9[df_yac_h9['PAD'] == p])
-                    posibles_yac += max(0, etapas_pad - 4)
+                    posibles_yac += max(0, len(df_yac_h9[df_yac_h9['PAD'] == p]) - 4)
                     
                 pct_cp_yac = (cp_totales_yac / posibles_yac * 100) if posibles_yac > 0 else 0
                 std_yac = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
                 
-                if 'duracion_minutos' in df_yac_h2.columns:
-                    minutos_totales_yac = pd.to_numeric(df_yac_h2['duracion_minutos'], errors='coerce').sum()
-                else:
-                    minutos_totales_yac = 0
-                    
-                dias_reales_yac = minutos_totales_yac / 1440.0
-                etapas_dia_real_yac = (etapas_totales_yac / dias_reales_yac) if dias_reales_yac > 0 else 0
+                etapas_dia_real_yac = (etapas_totales_yac / (tiempo_bombeo_yac / 24)) if tiempo_bombeo_yac > 0 else 0
                 
                 resumen_yac.append({
                     "Yacimiento": yac,
@@ -1019,10 +990,10 @@ try:
                     "Etapas/Día (Yacimiento)": round(etapas_dia_real_yac, 2),
                     "Tiempo de Bombeo (hr)": round(tiempo_bombeo_yac, 2),
                     "Tiempo Total de Bombeo Continuo (hr)": round(tiempo_total_cp_yac, 2),
-                    "Maximo Tiempo de Bombeo Continuo (hr)": round(max_tiempo_cp_yac, 2)
+                    "Máx. Diario CP (hr)": round(max_cp_diario_yac, 2)
                 })
                 
-            columnas_cuadro2 = ["Yacimiento", "Etapas Acumuladas", "Total CP Realizados", "% CP Final (Yacimiento)", "Etapas STD", "Etapas/Día (Yacimiento)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo (hr)"]
+            columnas_cuadro2 = ["Yacimiento", "Etapas Acumuladas", "Total CP Realizados", "% CP Final (Yacimiento)", "Etapas STD", "Etapas/Día (Yacimiento)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Máx. Diario CP (hr)"]
             df_resumen_yac = pd.DataFrame(resumen_yac) if resumen_yac else pd.DataFrame(columns=columnas_cuadro2)
             st.dataframe(df_resumen_yac, use_container_width=True, hide_index=True)
 
