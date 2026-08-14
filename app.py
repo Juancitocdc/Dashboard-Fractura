@@ -508,14 +508,28 @@ try:
         tab1, tab2 = st.tabs(["📊 Pestaña 1 (Detalle Diario)", "📋 Pestaña 2 (Resumen Global)"])
         
         with tab1:
+            # --- NUEVO: Buscamos el PAD más reciente para dejarlo por defecto ---
+            if 'fecha reporte' in df_h8.columns and not df_h8.empty:
+                idx_max_h8 = pd.to_datetime(df_h8['fecha reporte'], errors='coerce').idxmax()
+                yac_def_t = df_h8.loc[idx_max_h8, 'Yacimiento'] if pd.notna(idx_max_h8) else "S/D"
+                pad_def_t = df_h8.loc[idx_max_h8, 'PAD'] if pd.notna(idx_max_h8) else "S/D"
+            else:
+                yac_def_t, pad_def_t = "S/D", "S/D"
+
             col_s1, col_s2 = st.columns(2)
             yacimientos_disp = df_h8['Yacimiento'].dropna().unique().tolist() if 'Yacimiento' in df_h8.columns else ["S/D"]
             if not yacimientos_disp: yacimientos_disp = ["S/D"]
-            with col_s1: sel_yac_t1 = st.selectbox("Seleccionar Yacimiento (P1):", yacimientos_disp)
+            
+            # Pasamos el Yacimiento por defecto
+            yac_idx_t = yacimientos_disp.index(yac_def_t) if yac_def_t in yacimientos_disp else 0
+            with col_s1: sel_yac_t1 = st.selectbox("Seleccionar Yacimiento (P1):", yacimientos_disp, index=yac_idx_t)
             
             pads_disp = df_h8[df_h8['Yacimiento'] == sel_yac_t1]['PAD'].dropna().unique().tolist() if 'PAD' in df_h8.columns else ["S/D"]
             if not pads_disp: pads_disp = ["S/D"]
-            with col_s2: sel_pad_t1 = st.selectbox("Seleccionar PAD (P1):", pads_disp)
+            
+            # Pasamos el PAD por defecto
+            pad_idx_t = pads_disp.index(pad_def_t) if (sel_yac_t1 == yac_def_t and pad_def_t in pads_disp) else 0
+            with col_s2: sel_pad_t1 = st.selectbox("Seleccionar PAD (P1):", pads_disp, index=pad_idx_t)
             
             col_fecha_h8 = 'fecha reporte' if 'fecha reporte' in df_h8.columns else 'fecha_reporte'
             df_t1 = df_h8[(df_h8['Yacimiento'] == sel_yac_t1) & (df_h8['PAD'] == sel_pad_t1)].sort_values(col_fecha_h8).copy()
@@ -662,28 +676,59 @@ try:
     elif seccion == "🔄 Sección 2: Continuous Pumping":
         st.title("🔄 Continuous Pumping")
         
+        # --- NUEVO: Buscamos el PAD más reciente para setearlo por defecto ---
+        if 'fecha_reporte' in df_h9.columns and not df_h9.empty:
+            idx_max_h9 = pd.to_datetime(df_h9['fecha_reporte'], errors='coerce').idxmax()
+            yac_def_c = df_h9.loc[idx_max_h9, 'Yacimiento'] if pd.notna(idx_max_h9) else "S/D"
+            pad_def_c = df_h9.loc[idx_max_h9, 'PAD'] if pd.notna(idx_max_h9) else "S/D"
+        else:
+            yac_def_c, pad_def_c = "S/D", "S/D"
+
         tab3, tab4 = st.tabs(["📊 Pestaña 1 (Diario por PAD)", "📋 Pestaña 2 (Resumen Gerencial)"])
         
         with tab3:
             col_c1, col_c2 = st.columns(2)
             yacimientos_disp = df_h9['Yacimiento'].dropna().unique().tolist() if 'Yacimiento' in df_h9.columns else ["S/D"]
             if not yacimientos_disp: yacimientos_disp = ["S/D"]
-            with col_c1: sel_yac_c1 = st.selectbox("Seleccionar Yacimiento (C1):", yacimientos_disp)
+            
+            yac_idx_c = yacimientos_disp.index(yac_def_c) if yac_def_c in yacimientos_disp else 0
+            with col_c1: sel_yac_c1 = st.selectbox("Seleccionar Yacimiento (C1):", yacimientos_disp, index=yac_idx_c)
             
             pads_disp = df_h9[df_h9['Yacimiento'] == sel_yac_c1]['PAD'].dropna().unique().tolist() if 'PAD' in df_h9.columns else ["S/D"]
             if not pads_disp: pads_disp = ["S/D"]
-            with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp)
+            
+            pad_idx_c = pads_disp.index(pad_def_c) if (sel_yac_c1 == yac_def_c and pad_def_c in pads_disp) else 0
+            with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp, index=pad_idx_c)
             
             df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].sort_values('fecha_reporte').copy()
             df_c1_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
+            # ========================================================
+            # NUEVO: PRECALCULO DE BLOQUES Y TIEMPOS PARA EL PAD
+            # ========================================================
+            if 'fecha_hora_inicio' in df_c1_h9.columns and 'fecha_hora_fin' in df_c1_h9.columns:
+                df_c1_h9['Bombeo_Total_min'] = (pd.to_datetime(df_c1_h9['fecha_hora_fin']) - pd.to_datetime(df_c1_h9['fecha_hora_inicio'])).dt.total_seconds() / 60
+            else:
+                df_c1_h9['Bombeo_Total_min'] = 0
+
+            # El cumsum con negación genera un ID único para cada ráfaga de CP
+            df_c1_h9['bloque_id'] = (~df_c1_h9['es_cp_tecnico'].fillna(False)).cumsum()
+            
+            bloque_stats = df_c1_h9.groupby('bloque_id').agg(
+                etapas_en_bloque=('nro_etapa', 'count'),
+                horas_bloque=('Bombeo_Total_min', lambda x: x.sum() / 60)
+            ).reset_index()
+            
+            df_c1_h9 = df_c1_h9.merge(bloque_stats, on='bloque_id', how='left')
+            df_c1_h9['es_bloque_cp'] = df_c1_h9['etapas_en_bloque'] > 1
+            # ========================================================
+
             df_c1_h9['fecha_reporte'] = pd.to_datetime(df_c1_h9['fecha_reporte']).dt.date
             df_c1_h9['fecha_reporte_cp'] = pd.to_datetime(df_c1_h9['fecha_reporte_cp']).dt.date
             df_c1_h2['fecha_reporte'] = pd.to_datetime(df_c1_h2['fecha_reporte']).dt.date
             
             st.subheader(f"Cuadro 1 - Evolución CP ({sel_pad_c1})")
             
-            # NUEVO: Sumamos las fechas de df_c1_h2 para garantizar que los días 100% NPT no se pierdan
             todas_las_fechas = set(df_c1_h9['fecha_reporte'].dropna()) | set(df_c1_h9['fecha_reporte_cp'].dropna()) | set(df_c1_h2['fecha_reporte'].dropna())
             fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) 
             
@@ -701,13 +746,11 @@ try:
                 df_dia_h9_inicio = df_c1_h9[df_c1_h9['fecha_reporte_cp'] == fecha]
                 
                 etapas_dia = len(df_dia_h9_fin)
-                # Cuenta cuántas etapas de ese día específico cumplieron la nueva regla integral
                 if 'es_cp_tecnico' in df_dia_h9_inicio.columns:
                     cp_dia = df_dia_h9_inicio['es_cp_tecnico'].fillna(False).sum() 
                 else:
                     cp_dia = 0
 
-                # Esto suma los minutos de TODO el día (incluyendo NPT de la hoja de tiempos)
                 if 'duracion_minutos' in df_dia_h2.columns:
                     minutos_dia = pd.to_numeric(df_dia_h2['duracion_minutos'], errors='coerce').sum()
                 else:
@@ -726,7 +769,12 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # NUEVO: Se eliminó el "if" para que se guarden TODOS los días de la operación
+                # --- NUEVAS VARIABLES DE HORAS ---
+                tiempo_bombeo_dia = df_dia_h9_fin['Bombeo_Total_min'].sum() / 60
+                tiempo_total_cp_dia = df_dia_h9_fin.loc[df_dia_h9_fin['es_bloque_cp'], 'Bombeo_Total_min'].sum() / 60
+                max_tiempo_cp_dia = df_dia_h9_fin.loc[df_dia_h9_fin['es_bloque_cp'], 'horas_bloque'].max()
+                if pd.isna(max_tiempo_cp_dia): max_tiempo_cp_dia = 0
+                
                 datos_cp.append({
                     "Fecha Reporte": pd.to_datetime(fecha).strftime('%d/%m/%Y'),
                     "Etapas Acum.": acum_etapas_fin,
@@ -736,12 +784,15 @@ try:
                     "% CP (PAD)": f"{pct_cp_pad:.1f}%",
                     "Etapas STD": std_yac,
                     "Etapas/Día (Real)": round(etapas_por_dia_real, 2),
+                    "Tiempo de Bombeo (hr)": round(tiempo_bombeo_dia, 2),
+                    "Tiempo Total de Bombeo Continuo (hr)": round(tiempo_total_cp_dia, 2),
+                    "Maximo Tiempo de Bombeo Continuo Diario (hr)": round(max_tiempo_cp_dia, 2),
                     "Etapas Posibles CP (Acum-4)": posibles_acum_hoy
                 })
                 
                 posibles_acum_ayer = posibles_acum_hoy
                 
-            columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Etapas Posibles CP (Acum-4)"]
+            columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo Diario (hr)", "Etapas Posibles CP (Acum-4)"]
             df_cuadro1 = pd.DataFrame(datos_cp) if datos_cp else pd.DataFrame(columns=columnas_tabla)
             st.dataframe(df_cuadro1, use_container_width=True, hide_index=True)
             
@@ -750,31 +801,24 @@ try:
             df_gantt = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
             
             if not df_gantt.empty:
-                # 1. ORDENAMOS CRONOLÓGICAMENTE PARA EL GANTT
                 df_gantt = df_gantt.sort_values('fecha_hora_inicio')
                 
-                # 2. Usa directamente el veredicto del motor de procesamiento
                 if 'es_cp_tecnico' in df_gantt.columns:
                     df_gantt['Es_CP'] = df_gantt['es_cp_tecnico'].fillna(False)
                 else:
                     df_gantt['Es_CP'] = False
                     
-                # 3. Etiqueta para la leyenda del gráfico
                 df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
                 df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
                 
-                # --- NUEVO: Textos limpios para el cartelito interactivo ---
                 df_gantt['Inicio_str'] = df_gantt['fecha_hora_inicio'].dt.strftime('%d/%m/%Y %H:%M')
                 df_gantt['Fin_str'] = df_gantt['fecha_hora_fin'].dt.strftime('%d/%m/%Y %H:%M')
                 
-                # 4. Armado del Gráfico (agregamos custom_data para mandarle variables limpias al tooltip)
                 fig = px.timeline(df_gantt, x_start="fecha_hora_inicio", x_end="fecha_hora_fin", y="nombre_pozo", 
                                   color="Tipo_FRAC",
                                   color_discrete_map={"FRAC (Con CP)": "#2ca02c", "FRAC (Sin CP)": "#d62728"},
                                   custom_data=['nombre_pozo', 'Etapa Nro', 'Inicio_str', 'Fin_str'])
                 
-                # --- NUEVO: Formateo exacto del cartelito con HTML (<b> para negrita, <br> para enter) ---
-                # El <extra></extra> al final borra un recuadro secundario molesto que suele aparecer al lado
                 fig.update_traces(
                     hovertemplate="<b>%{customdata[0]} - Etapa %{customdata[1]}</b><br>" +
                                   "Inicio de Fractura = %{customdata[2]}<br>" +
@@ -793,7 +837,6 @@ try:
             with col_t1:
                 st.subheader("Listado de Transiciones")
                 if 'transicion_cp_con_nueva_logica_chequeo' in df_c1_h9.columns:
-                    # NUEVO: Agregamos .sort_values('fecha_hora_inicio') al final
                     df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy().sort_values('fecha_hora_inicio')
                 else:
                     df_trans = pd.DataFrame()
@@ -808,7 +851,6 @@ try:
             with col_t2:
                 st.subheader("Etapas con Continuous Pumping")
                 if 'es_cp_tecnico' in df_c1_h9.columns:
-                    # NUEVO: Agregamos .sort_values('fecha_hora_inicio') al final
                     df_logrados = df_c1_h9[df_c1_h9['es_cp_tecnico'] == True].copy().sort_values('fecha_hora_inicio')
                 else:
                     df_logrados = pd.DataFrame()
@@ -826,16 +868,42 @@ try:
         with tab4:
             st.subheader("Cuadro 1 - Foto Final por PAD")
             col_m3, col_m4 = st.columns(2)
-            with col_m3: sel_yac_c2 = st.multiselect("Seleccionar Yacimiento(s) (C2):", yacimientos_disp, default=yacimientos_disp)
+            
+            # --- Pre-fill de Multiselects ---
+            def_yacs = [yac_def_c] if yac_def_c != "S/D" else yacimientos_disp
+            with col_m3: sel_yac_c2 = st.multiselect("Seleccionar Yacimiento(s) (C2):", yacimientos_disp, default=def_yacs)
+            
             pads_disp_c2 = df_h9[df_h9['Yacimiento'].isin(sel_yac_c2)]['PAD'].dropna().unique().tolist()
-            with col_m4: sel_pad_c2 = st.multiselect("Seleccionar PAD(s) (C2):", pads_disp_c2, default=pads_disp_c2)
+            def_pads = [pad_def_c] if pad_def_c in pads_disp_c2 else pads_disp_c2
+            with col_m4: sel_pad_c2 = st.multiselect("Seleccionar PAD(s) (C2):", pads_disp_c2, default=def_pads)
             
             resumen_cp = []
             for pad in sel_pad_c2:
-                df_pad_h9 = df_h9[df_h9['PAD'] == pad]
-                df_pad_h2 = df_h2[df_h2['PAD'] == pad]
+                df_pad_h9 = df_h9[df_h9['PAD'] == pad].copy()
+                df_pad_h2 = df_h2[df_h2['PAD'] == pad].copy()
                 if df_pad_h9.empty: continue
                 
+                # --- PRECALCULO PARA CUADRO GERENCIAL PAD ---
+                if 'fecha_hora_inicio' in df_pad_h9.columns and 'fecha_hora_fin' in df_pad_h9.columns:
+                    df_pad_h9['Bombeo_Total_min'] = (pd.to_datetime(df_pad_h9['fecha_hora_fin']) - pd.to_datetime(df_pad_h9['fecha_hora_inicio'])).dt.total_seconds() / 60
+                else:
+                    df_pad_h9['Bombeo_Total_min'] = 0
+
+                df_pad_h9['bloque_id'] = (~df_pad_h9['es_cp_tecnico'].fillna(False)).cumsum()
+                bloque_stats = df_pad_h9.groupby('bloque_id').agg(
+                    etapas_en_bloque=('nro_etapa', 'count'),
+                    horas_bloque=('Bombeo_Total_min', lambda x: x.sum() / 60)
+                ).reset_index()
+                
+                df_pad_h9 = df_pad_h9.merge(bloque_stats, on='bloque_id', how='left')
+                df_pad_h9['es_bloque_cp'] = df_pad_h9['etapas_en_bloque'] > 1
+                
+                tiempo_bombeo_pad = df_pad_h9['Bombeo_Total_min'].sum() / 60
+                tiempo_total_cp_pad = df_pad_h9.loc[df_pad_h9['es_bloque_cp'], 'Bombeo_Total_min'].sum() / 60
+                max_tiempo_cp_pad = df_pad_h9.loc[df_pad_h9['es_bloque_cp'], 'horas_bloque'].max()
+                if pd.isna(max_tiempo_cp_pad): max_tiempo_cp_pad = 0
+                # --------------------------------------------
+
                 yac = df_pad_h9['Yacimiento'].iloc[0]
                 std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
                 
@@ -867,52 +935,73 @@ try:
                     "% CP Final (PAD)": f"{pct_cp_final:.1f}%",
                     "Etapas STD": std,
                     "Etapas/Día (Real)": round(etapas_dia_real, 2),
+                    "Tiempo de Bombeo (hr)": round(tiempo_bombeo_pad, 2),
+                    "Tiempo Total de Bombeo Continuo (hr)": round(tiempo_total_cp_pad, 2),
+                    "Maximo Tiempo de Bombeo Continuo (hr)": round(max_tiempo_cp_pad, 2),
                     "Posibles CP (Total - 4)": etapas_posibles,
-                    "Última Fecha": ultima_fecha # <--- Fecha movida al final
+                    "Última Fecha": ultima_fecha
                 })
             
-            # Formateo del Cuadro 1
-            columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Posibles CP (Total - 4)", "Última Fecha"]
+            columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo (hr)", "Posibles CP (Total - 4)", "Última Fecha"]
             df_resumen = pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=columnas_cuadro1)
             st.dataframe(df_resumen, use_container_width=True, hide_index=True)
             
             # ==========================================
-            # NUEVO: CUADRO 2 - RESUMEN POR YACIMIENTO
+            # CUADRO 2 - RESUMEN POR YACIMIENTO
             # ==========================================
             st.subheader("Cuadro 2 - Resumen por Yacimiento")
             resumen_yac = []
             
             for yac in sel_yac_c2:
-                # Nos aseguramos de sumar solo los PADs que están filtrados en pantalla
                 pads_del_yac = [p for p in sel_pad_c2 if p in df_h9[df_h9['Yacimiento'] == yac]['PAD'].unique()]
                 if not pads_del_yac: continue
                 
-                df_yac_h9 = df_h9[(df_h9['Yacimiento'] == yac) & (df_h9['PAD'].isin(pads_del_yac))]
-                df_yac_h2 = df_h2[(df_h2['Yacimiento'] == yac) & (df_h2['PAD'].isin(pads_del_yac))]
-                
+                df_yac_h9 = df_h9[(df_h9['Yacimiento'] == yac) & (df_h9['PAD'].isin(pads_del_yac))].copy()
+                df_yac_h2 = df_h2[(df_h2['Yacimiento'] == yac) & (df_h2['PAD'].isin(pads_del_yac))].copy()
                 if df_yac_h9.empty: continue
                 
-                # 1. Etapas Acumuladas del Yacimiento
-                etapas_totales_yac = len(df_yac_h9)
+                # --- PRECALCULO PARA CUADRO GERENCIAL YACIMIENTO ---
+                tiempo_bombeo_yac = 0
+                tiempo_total_cp_yac = 0
+                max_tiempo_cp_yac = 0
                 
-                # 2. Total de CP Realizados del Yacimiento
+                for p in pads_del_yac:
+                    df_p = df_yac_h9[df_yac_h9['PAD'] == p].copy()
+                    if 'fecha_hora_inicio' in df_p.columns and 'fecha_hora_fin' in df_p.columns:
+                        df_p['Bombeo_Total_min'] = (pd.to_datetime(df_p['fecha_hora_fin']) - pd.to_datetime(df_p['fecha_hora_inicio'])).dt.total_seconds() / 60
+                    else:
+                        df_p['Bombeo_Total_min'] = 0
+                        
+                    df_p['bloque_id'] = (~df_p['es_cp_tecnico'].fillna(False)).cumsum()
+                    b_stats = df_p.groupby('bloque_id').agg(
+                        etapas_en_bloque=('nro_etapa', 'count'),
+                        horas_bloque=('Bombeo_Total_min', lambda x: x.sum() / 60)
+                    ).reset_index()
+                    df_p = df_p.merge(b_stats, on='bloque_id', how='left')
+                    df_p['es_bloque_cp'] = df_p['etapas_en_bloque'] > 1
+                    
+                    tiempo_bombeo_yac += df_p['Bombeo_Total_min'].sum() / 60
+                    tiempo_total_cp_yac += df_p.loc[df_p['es_bloque_cp'], 'Bombeo_Total_min'].sum() / 60
+                    
+                    max_p = df_p.loc[df_p['es_bloque_cp'], 'horas_bloque'].max()
+                    if pd.notna(max_p) and max_p > max_tiempo_cp_yac:
+                        max_tiempo_cp_yac = max_p
+                # ---------------------------------------------------
+                
+                etapas_totales_yac = len(df_yac_h9)
                 if 'es_cp_tecnico' in df_yac_h9.columns:
                     cp_totales_yac = df_yac_h9['es_cp_tecnico'].fillna(False).sum()
                 else:
                     cp_totales_yac = 0
                 
-                # 3. Cálculo de %CP Final (Matemática pura: Posibles sumadas de cada PAD)
                 posibles_yac = 0
                 for p in pads_del_yac:
                     etapas_pad = len(df_yac_h9[df_yac_h9['PAD'] == p])
                     posibles_yac += max(0, etapas_pad - 4)
                     
                 pct_cp_yac = (cp_totales_yac / posibles_yac * 100) if posibles_yac > 0 else 0
-                
-                # 4. Etapas STD
                 std_yac = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
                 
-                # 5. Etapas/Día Real (Yacimiento)
                 if 'duracion_minutos' in df_yac_h2.columns:
                     minutos_totales_yac = pd.to_numeric(df_yac_h2['duracion_minutos'], errors='coerce').sum()
                 else:
@@ -921,18 +1010,19 @@ try:
                 dias_reales_yac = minutos_totales_yac / 1440.0
                 etapas_dia_real_yac = (etapas_totales_yac / dias_reales_yac) if dias_reales_yac > 0 else 0
                 
-                # Guardamos la fila del Yacimiento
                 resumen_yac.append({
                     "Yacimiento": yac,
                     "Etapas Acumuladas": etapas_totales_yac,
                     "Total CP Realizados": cp_totales_yac,
                     "% CP Final (Yacimiento)": f"{pct_cp_yac:.1f}%",
                     "Etapas STD": std_yac,
-                    "Etapas/Día (Yacimiento)": round(etapas_dia_real_yac, 2)
+                    "Etapas/Día (Yacimiento)": round(etapas_dia_real_yac, 2),
+                    "Tiempo de Bombeo (hr)": round(tiempo_bombeo_yac, 2),
+                    "Tiempo Total de Bombeo Continuo (hr)": round(tiempo_total_cp_yac, 2),
+                    "Maximo Tiempo de Bombeo Continuo (hr)": round(max_tiempo_cp_yac, 2)
                 })
                 
-            # Formateo del Cuadro 2
-            columnas_cuadro2 = ["Yacimiento", "Etapas Acumuladas", "Total CP Realizados", "% CP Final (Yacimiento)", "Etapas STD", "Etapas/Día (Yacimiento)"]
+            columnas_cuadro2 = ["Yacimiento", "Etapas Acumuladas", "Total CP Realizados", "% CP Final (Yacimiento)", "Etapas STD", "Etapas/Día (Yacimiento)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo (hr)"]
             df_resumen_yac = pd.DataFrame(resumen_yac) if resumen_yac else pd.DataFrame(columns=columnas_cuadro2)
             st.dataframe(df_resumen_yac, use_container_width=True, hide_index=True)
 
