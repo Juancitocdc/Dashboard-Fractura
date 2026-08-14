@@ -508,7 +508,10 @@ try:
         tab1, tab2 = st.tabs(["📊 Pestaña 1 (Detalle Diario)", "📋 Pestaña 2 (Resumen Global)"])
         
         with tab1:
-            # --- NUEVO: Buscamos el PAD más reciente para dejarlo por defecto ---
+            # --- NUEVO: 3 Columnas para incluir el filtro de fecha ---
+            col_s1, col_s2, col_s3 = st.columns([1, 1, 1])
+            
+            # --- NUEVO: Lógica del PAD por defecto ---
             if 'fecha reporte' in df_h8.columns and not df_h8.empty:
                 idx_max_h8 = pd.to_datetime(df_h8['fecha reporte'], errors='coerce').idxmax()
                 yac_def_t = df_h8.loc[idx_max_h8, 'Yacimiento'] if pd.notna(idx_max_h8) else "S/D"
@@ -516,23 +519,37 @@ try:
             else:
                 yac_def_t, pad_def_t = "S/D", "S/D"
 
-            col_s1, col_s2 = st.columns(2)
             yacimientos_disp = df_h8['Yacimiento'].dropna().unique().tolist() if 'Yacimiento' in df_h8.columns else ["S/D"]
             if not yacimientos_disp: yacimientos_disp = ["S/D"]
             
-            # Pasamos el Yacimiento por defecto
             yac_idx_t = yacimientos_disp.index(yac_def_t) if yac_def_t in yacimientos_disp else 0
             with col_s1: sel_yac_t1 = st.selectbox("Seleccionar Yacimiento (P1):", yacimientos_disp, index=yac_idx_t)
             
             pads_disp = df_h8[df_h8['Yacimiento'] == sel_yac_t1]['PAD'].dropna().unique().tolist() if 'PAD' in df_h8.columns else ["S/D"]
             if not pads_disp: pads_disp = ["S/D"]
             
-            # Pasamos el PAD por defecto
             pad_idx_t = pads_disp.index(pad_def_t) if (sel_yac_t1 == yac_def_t and pad_def_t in pads_disp) else 0
             with col_s2: sel_pad_t1 = st.selectbox("Seleccionar PAD (P1):", pads_disp, index=pad_idx_t)
             
             col_fecha_h8 = 'fecha reporte' if 'fecha reporte' in df_h8.columns else 'fecha_reporte'
             df_t1 = df_h8[(df_h8['Yacimiento'] == sel_yac_t1) & (df_h8['PAD'] == sel_pad_t1)].sort_values(col_fecha_h8).copy()
+            
+            # --- NUEVO: Selector de Fechas interactivo ---
+            if not df_t1.empty:
+                min_date_t1 = pd.to_datetime(df_t1[col_fecha_h8]).min().date()
+                max_date_t1 = pd.to_datetime(df_t1[col_fecha_h8]).max().date()
+            else:
+                min_date_t1, max_date_t1 = datetime.today().date(), datetime.today().date()
+                
+            with col_s3: 
+                fechas_t1 = st.date_input("Filtrar Fechas (P1):", [min_date_t1, max_date_t1], min_value=min_date_t1, max_value=max_date_t1)
+                
+            # Manejo de error si el usuario selecciona solo un día
+            if len(fechas_t1) == 2:
+                f_inicio_t1, f_fin_t1 = fechas_t1
+            else:
+                f_inicio_t1, f_fin_t1 = fechas_t1[0], fechas_t1[0]
+            # -----------------------------------------------
             
             suf_npt = "Con NPT" if toggle_npt == "Con NPT" else "Sin NPT"
             suf_und = toggle_unidad 
@@ -563,7 +580,10 @@ try:
                     "Frac Prom 24hs": (df_t1[f'Promedio FRAC {suf_npt} min'].fillna(0) / factor_div).round(2),
                     "Frac Prom PAD": (prom_pad_frac.fillna(0) / factor_div).round(2) if isinstance(prom_pad_frac, pd.Series) else 0
                 })
-                st.dataframe(cuadro1, use_container_width=True, hide_index=True)
+                # --- NUEVO: Aplicamos el filtro visual al Cuadro 1 ---
+                cuadro1['Fecha_Date'] = pd.to_datetime(cuadro1["Fecha de Reporte"], format='%d/%m/%Y').dt.date
+                cuadro1_filtrado = cuadro1[(cuadro1['Fecha_Date'] >= f_inicio_t1) & (cuadro1['Fecha_Date'] <= f_fin_t1)].drop(columns=['Fecha_Date'])
+                st.dataframe(cuadro1_filtrado, use_container_width=True, hide_index=True)
             except Exception as e:
                 st.warning(f"⚠️ Hubo un problema al dibujar el Cuadro 1: {e}")
 
@@ -585,7 +605,10 @@ try:
                     "NPT Frac Prom 24hs": (df_t1['FRAC NPT Promedio (min)'] / factor_div).fillna(0).round(2),
                     "NPT Frac Prom PAD": (prom_pad_npt_frac.fillna(0) / factor_div).round(2) if isinstance(prom_pad_npt_frac, pd.Series) else 0
                 })
-                st.dataframe(cuadro2, use_container_width=True, hide_index=True)
+                # --- NUEVO: Aplicamos el filtro visual al Cuadro 2 ---
+                cuadro2['Fecha_Date'] = pd.to_datetime(cuadro2["Fecha de Reporte"], format='%d/%m/%Y').dt.date
+                cuadro2_filtrado = cuadro2[(cuadro2['Fecha_Date'] >= f_inicio_t1) & (cuadro2['Fecha_Date'] <= f_fin_t1)].drop(columns=['Fecha_Date'])
+                st.dataframe(cuadro2_filtrado, use_container_width=True, hide_index=True)
             except Exception as e:
                 pass
 
@@ -686,7 +709,8 @@ try:
         tab3, tab4 = st.tabs(["📊 Pestaña 1 (Diario por PAD)", "📋 Pestaña 2 (Resumen Gerencial)"])
         
         with tab3:
-            col_c1, col_c2 = st.columns(2)
+            # --- NUEVO: 3 Columnas para incluir el filtro de fecha ---
+            col_c1, col_c2, col_c3 = st.columns([1, 1, 1])
             yacimientos_disp = df_h9['Yacimiento'].dropna().unique().tolist() if 'Yacimiento' in df_h9.columns else ["S/D"]
             if not yacimientos_disp: yacimientos_disp = ["S/D"]
             
@@ -701,6 +725,22 @@ try:
             
             df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].sort_values('fecha_reporte').copy()
             df_c1_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
+            
+            # --- NUEVO: Selector de Fechas interactivo ---
+            if not df_c1_h9.empty:
+                min_date_c1 = pd.to_datetime(df_c1_h9['fecha_reporte']).min().date()
+                max_date_c1 = pd.to_datetime(df_c1_h9['fecha_reporte']).max().date()
+            else:
+                min_date_c1, max_date_c1 = datetime.today().date(), datetime.today().date()
+                
+            with col_c3:
+                fechas_c1 = st.date_input("Filtrar Fechas (C1):", [min_date_c1, max_date_c1], min_value=min_date_c1, max_value=max_date_c1)
+                
+            if len(fechas_c1) == 2:
+                f_inicio_c1, f_fin_c1 = fechas_c1
+            else:
+                f_inicio_c1, f_fin_c1 = fechas_c1[0], fechas_c1[0]
+            # -----------------------------------------------
             
             # --- DEFINICIÓN DE BLOQUES DE CONTINUOUS PUMPING ---
             df_c1_h9['bloque_id'] = (~df_c1_h9['es_cp_tecnico'].fillna(False)).cumsum()
@@ -722,11 +762,11 @@ try:
             datos_cp = []
             acum_etapas_fin = 0
             acum_cp = 0
-            acum_minutos_totales = 0 # Restaurado
+            acum_minutos_totales = 0
             posibles_acum_ayer = 0
             
             for fecha in fechas_pad:
-                # 1. Filtros de etapas contadas
+                # Todo el proceso matemático intacto...
                 df_dia_h9_fin = df_c1_h9[df_c1_h9['fecha_reporte'] == fecha]
                 df_dia_h9_inicio = df_c1_h9[df_c1_h9['fecha_reporte_cp'] == fecha]
                 df_dia_h2 = df_c1_h2[df_c1_h2['fecha_reporte'] == fecha]
@@ -734,7 +774,6 @@ try:
                 etapas_dia = len(df_dia_h9_fin)
                 cp_dia = df_dia_h9_inicio['es_cp_tecnico'].fillna(False).sum() if 'es_cp_tecnico' in df_dia_h9_inicio.columns else 0
                 
-                # Restaurada la lógica operativa de Tiempos (h2)
                 if 'duracion_minutos' in df_dia_h2.columns:
                     minutos_dia = pd.to_numeric(df_dia_h2['duracion_minutos'], errors='coerce').sum()
                 else:
@@ -750,11 +789,10 @@ try:
                 pct_cp_dia = (cp_dia / posibles_dia * 100) if posibles_dia > 0 else 0
                 pct_cp_pad = (acum_cp / posibles_acum_hoy * 100) if posibles_acum_hoy > 0 else 0
                 
-                # Restaurado el cálculo real de días de locación
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # 2. EL TIJERETAZO MATEMÁTICO DE BOMBEO (Ventana de 24hs)
+                # Ventana de 24hs
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
@@ -798,11 +836,22 @@ try:
                 
             columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo Diario (hr)", "Etapas Posibles CP (Acum-4)"]
             df_cuadro1 = pd.DataFrame(datos_cp) if datos_cp else pd.DataFrame(columns=columnas_tabla)
-            st.dataframe(df_cuadro1, use_container_width=True, hide_index=True)
+            
+            # --- NUEVO: Aplicamos el filtro visual a Cuadro 1 ---
+            if not df_cuadro1.empty:
+                df_cuadro1['Fecha_Date'] = pd.to_datetime(df_cuadro1["Fecha Reporte"], format='%d/%m/%Y').dt.date
+                df_cuadro1_filtrado = df_cuadro1[(df_cuadro1['Fecha_Date'] >= f_inicio_c1) & (df_cuadro1['Fecha_Date'] <= f_fin_c1)].drop(columns=['Fecha_Date'])
+            else:
+                df_cuadro1_filtrado = df_cuadro1
+            st.dataframe(df_cuadro1_filtrado, use_container_width=True, hide_index=True)
             
             st.subheader("Línea de Tiempo (Gantt) - FRAC & CP")
             
             df_gantt = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
+            
+            # --- NUEVO: Aplicamos el filtro visual al Gantt ---
+            if not df_gantt.empty:
+                df_gantt = df_gantt[(pd.to_datetime(df_gantt['fecha_reporte']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_gantt['fecha_reporte']).dt.date <= f_fin_c1)]
             
             if not df_gantt.empty:
                 df_gantt = df_gantt.sort_values('fecha_hora_inicio')
@@ -834,7 +883,7 @@ try:
                 
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("⚠️ Todavía no hay datos de horario de bombeo cargados en el Excel para dibujar el diagrama de Gantt en este PAD.")
+                st.warning("⚠️ No hay datos de bombeo para el rango de fechas seleccionado.")
             
             col_t1, col_t2 = st.columns(2)
             
@@ -842,6 +891,8 @@ try:
                 st.subheader("Listado de Transiciones")
                 if 'transicion_cp_con_nueva_logica_chequeo' in df_c1_h9.columns:
                     df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy().sort_values('fecha_hora_inicio')
+                    # --- NUEVO: Aplicamos el filtro visual a las transiciones ---
+                    df_trans = df_trans[(pd.to_datetime(df_trans['fecha_reporte_cp']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_trans['fecha_reporte_cp']).dt.date <= f_fin_c1)]
                 else:
                     df_trans = pd.DataFrame()
                     
@@ -849,13 +900,15 @@ try:
                     "Fecha de Reporte": pd.to_datetime(df_trans['fecha_reporte_cp']).dt.strftime('%d/%m/%Y') if not df_trans.empty else [],
                     "Transición (Pozo/Etapa)": df_trans['transicion_cp_con_nueva_logica_chequeo'] if not df_trans.empty else []
                 })
-                if tabla1.empty: tabla1 = pd.DataFrame(columns=["Fecha", "Transición (Pozo/Etapa)"])
+                if tabla1.empty: tabla1 = pd.DataFrame(columns=["Fecha de Reporte", "Transición (Pozo/Etapa)"])
                 st.dataframe(tabla1, use_container_width=True, hide_index=True)
 
             with col_t2:
                 st.subheader("Etapas con Continuous Pumping")
                 if 'es_cp_tecnico' in df_c1_h9.columns:
                     df_logrados = df_c1_h9[df_c1_h9['es_cp_tecnico'] == True].copy().sort_values('fecha_hora_inicio')
+                    # --- NUEVO: Aplicamos el filtro visual a las etapas logradas ---
+                    df_logrados = df_logrados[(pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_logrados['fecha_reporte_cp']).dt.date <= f_fin_c1)]
                 else:
                     df_logrados = pd.DataFrame()
                     
