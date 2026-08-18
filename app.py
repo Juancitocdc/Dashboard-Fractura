@@ -773,19 +773,39 @@ try:
             df_res = pd.DataFrame(final_segments).sort_values('fecha_hora_inicio').reset_index(drop=True)
             return df_res
 
+        def calcular_tiempos_cp_bloque(df_bloque, df_npt):
+            if df_bloque.empty: return 0, 0
+            
+            b_start = df_bloque['fecha_hora_inicio'].min()
+            b_end = df_bloque['fecha_hora_fin'].max()
+            
+            df_temp = pd.DataFrame([{'fecha_hora_inicio': b_start, 'fecha_hora_fin': b_end}])
+            df_limpio = segmentar_bombeo(df_temp, df_npt)
+            
+            if df_limpio.empty: return 0, 0
+            
+            total_mins = (df_limpio['fecha_hora_fin'] - df_limpio['fecha_hora_inicio']).dt.total_seconds().sum() / 60.0
+            max_mins = (df_limpio['fecha_hora_fin'] - df_limpio['fecha_hora_inicio']).dt.total_seconds().max() / 60.0
+            
+            return total_mins, max_mins
+
         def procesar_pad_cp(df_h9_pad, df_h2_pad):
-            # Base Original (1 fila = 1 etapa)
             df_p = df_h9_pad.copy().sort_values('fecha_hora_inicio').drop_duplicates(subset=['nombre_pozo', 'nro_etapa', 'fecha_hora_inicio'])
             df_npt = df_h2_pad[df_h2_pad['es_npt'] == True].copy() if 'es_npt' in df_h2_pad.columns else pd.DataFrame()
 
-            # Base Limpia (Fragmentada para cálculos de tiempo y Gantt)
+            # Blindaje para evitar el KeyError
+            if 'es_cp_tecnico' not in df_p.columns:
+                df_p['es_cp_tecnico'] = False
+
             df_l = segmentar_bombeo(df_p, df_npt)
+            
+            df_l['bloque_id'] = 0
+            df_l['es_bloque_cp'] = False
 
             if not df_l.empty and not df_p.empty:
                 df_l['stage_id'] = df_l['nombre_pozo'].astype(str) + "_" + df_l['nro_etapa'].astype(str)
                 df_p['stage_id'] = df_p['nombre_pozo'].astype(str) + "_" + df_p['nro_etapa'].astype(str)
 
-                # Busca inicios y fines netos post-recorte
                 real_starts = df_l.groupby('stage_id')['fecha_hora_inicio'].min()
                 real_ends = df_l.groupby('stage_id')['fecha_hora_fin'].max()
 
@@ -795,12 +815,11 @@ try:
                 df_p = df_p.sort_values('real_start')
                 prev_ends = df_p['real_end'].shift(1)
 
-                # AUDITORÍA DE CP (Las flechas rojas y verdes de tu imagen)
                 valid_cp = []
                 for idx in df_p.index:
                     c_start = df_p.loc[idx, 'real_start']
                     p_end = prev_ends[idx]
-                    base_cp = df_p.loc[idx, 'es_cp_tecnico'] if 'es_cp_tecnico' in df_p.columns else False
+                    base_cp = df_p.loc[idx, 'es_cp_tecnico'] 
 
                     if pd.isna(c_start) or pd.isna(p_end) or not base_cp:
                         valid_cp.append(False)
@@ -808,7 +827,6 @@ try:
 
                     gap_mins = (c_start - p_end).total_seconds() / 60.0
                     
-                    # Regla estricta: Gap menor a 5 mins Y que no exista NPT en ese hueco
                     if gap_mins <= 5 and not has_npt_in_gap(p_end, c_start, df_npt):
                         valid_cp.append(True)
                     else:
@@ -816,8 +834,9 @@ try:
 
                 df_p['es_cp_tecnico'] = valid_cp
 
-                # Marca los Mega-Bloques en la base Limpia
                 df_l = df_l.merge(df_p[['stage_id', 'es_cp_tecnico']], on='stage_id', how='left')
+                
+                df_l = df_l.sort_values('fecha_hora_inicio')
                 gap_seg = (df_l['fecha_hora_inicio'] - df_l['fecha_hora_fin'].shift(1)).dt.total_seconds() / 60
                 mismo_stage = df_l['stage_id'] == df_l['stage_id'].shift(1)
                 es_nueva_cp = (~mismo_stage) & df_l['es_cp_tecnico'].fillna(False)
@@ -828,7 +847,6 @@ try:
                 for pe, cs in zip(p_e_seg, c_s_seg):
                     is_npt_in_gap.append(has_npt_in_gap(pe, cs, df_npt))
 
-                # Forma los trenes de Continuous Pumping
                 es_continuo = (gap_seg <= 5) & (~pd.Series(is_npt_in_gap, index=df_l.index)) & (mismo_stage | es_nueva_cp)
                 df_l['bloque_id'] = (~es_continuo).cumsum()
                 df_l['es_bloque_cp'] = df_l.groupby('bloque_id')['stage_id'].transform('nunique') > 1
@@ -862,7 +880,7 @@ try:
             df_pad_raw = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].copy()
             df_pad_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
-            # Ejecuta la función maestra que arregla las flechas
+            # Ejecuta la función maestra que arregla las flechas y genera las bases
             df_c1_h9, df_h9_limpio = procesar_pad_cp(df_pad_raw, df_pad_h2)
             
             if not df_c1_h9.empty:
@@ -892,6 +910,7 @@ try:
             fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) 
             
             std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
+            df_npt_pad = df_c1_h2[df_c1_h2['es_npt'] == True].copy() if 'es_npt' in df_c1_h2.columns else pd.DataFrame()
             
             datos_cp = []
             acum_etapas_fin = 0
@@ -925,7 +944,6 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # Tijeretazo 24hs sobre la base LIMPIA
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
@@ -940,9 +958,15 @@ try:
                     if not df_hoy.empty:
                         tiempo_bombeo_dia = df_hoy['minutos_en_ventana'].sum() / 60
                         df_cp_hoy = df_hoy[df_hoy['es_bloque_cp'] == True]
-                        tiempo_total_cp_dia = df_cp_hoy['minutos_en_ventana'].sum() / 60
+                        tiempo_total_cp_dia = 0
+                        max_tiempo_cp_dia = 0
                         
-                        max_tiempo_cp_dia = df_cp_hoy.groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60 if not df_cp_hoy.empty else 0
+                        if not df_cp_hoy.empty:
+                            for b_id, group in df_cp_hoy.groupby('bloque_id'):
+                                b_tot_min, b_max_min = calcular_tiempos_cp_bloque(group, df_npt_pad)
+                                tiempo_total_cp_dia += b_tot_min
+                                if b_max_min > max_tiempo_cp_dia:
+                                    max_tiempo_cp_dia = b_max_min
                     else:
                         tiempo_bombeo_dia, tiempo_total_cp_dia, max_tiempo_cp_dia = 0, 0, 0
                 else:
@@ -1053,8 +1077,8 @@ try:
                 if df_pad_raw.empty: continue
                 df_pad_h2 = df_h2[df_h2['PAD'] == pad].copy()
                 
-                # Ejecuta la limpieza maestra también para el cuadro general
                 df_pad_h9, df_pad_h9_limpio = procesar_pad_cp(df_pad_raw, df_pad_h2)
+                df_npt_gerencial = df_pad_h2[df_pad_h2['es_npt'] == True].copy() if 'es_npt' in df_pad_h2.columns else pd.DataFrame()
                 
                 yac = df_pad_h9['Yacimiento'].iloc[0]
                 std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
@@ -1098,11 +1122,13 @@ try:
                         if not df_hoy_pad.empty:
                             tiempo_bombeo_pad += df_hoy_pad['minutos_en_ventana'].sum() / 60
                             df_bloques_hoy = df_hoy_pad[df_hoy_pad['es_bloque_cp'] == True]
-                            tiempo_total_cp_pad += df_bloques_hoy['minutos_en_ventana'].sum() / 60
                             
-                            max_dia = df_bloques_hoy.groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60 if not df_bloques_hoy.empty else 0
-                            if max_dia > max_cp_diario_pad:
-                                max_cp_diario_pad = max_dia
+                            if not df_bloques_hoy.empty:
+                                for b_id, group in df_bloques_hoy.groupby('bloque_id'):
+                                    b_tot_min, b_max_min = calcular_tiempos_cp_bloque(group, df_npt_gerencial)
+                                    tiempo_total_cp_pad += b_tot_min
+                                    if b_max_min > max_cp_diario_pad:
+                                        max_cp_diario_pad = b_max_min
                 
                 resumen_cp.append({
                     "Yacimiento": yac,
