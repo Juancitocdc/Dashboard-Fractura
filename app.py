@@ -829,8 +829,8 @@ try:
                 
                 has_npt = has_npt_in_gap(prev_frag['fecha_hora_fin'], frag['fecha_hora_inicio'], df_npt)
                 
-                # --- BLOQUE FÍSICO (Los recuadros verdes de tu imagen) ---
-                # Si el gap > 5 o hay NPT, se rompe el tren físico de bombeo.
+                # --- BLOQUE FÍSICO (Para sumar las horas) ---
+                # Si el gap > 5 o hay NPT, se rompe físicamente el tren de bombeo.
                 if gap_mins > 5 or has_npt:
                     breaks_physical_block.append(True)
                 else:
@@ -858,11 +858,12 @@ try:
             df_frag['break_block'] = breaks_physical_block
             df_frag['bloque_id'] = df_frag['break_block'].cumsum()
             
-            # Un "Tren de Bombeo Máximo" es cualquier bloque que involucró más de un fragmento/etapa
-            b_counts = df_frag.groupby('bloque_id')['stage_id'].transform('nunique')
-            df_frag['es_bloque_cp'] = b_counts > 1
+            # LA MAGIA DE LA LOCOMOTORA ROJA:
+            # Un "Tren de Bombeo Continuo" es cualquier bloque físico que tenga al menos UN fragmento verde.
+            # Si lo tiene, TODO el bloque (incluida la etapa roja que arrancó las bombas) se cuenta para las horas CP.
+            df_frag['es_bloque_cp'] = df_frag.groupby('bloque_id')['es_cp_final'].transform('any')
             
-            # 4. Impactar resultado en la base original
+            # 4. Impactar resultado en la base original (Auditoría de etapas)
             cp_por_etapa = df_frag.groupby('stage_id')['es_cp_final'].any()
             df_p['es_cp_final'] = df_p['stage_id'].map(cp_por_etapa).fillna(False)
             
@@ -961,7 +962,7 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # Extracción de Tiempos usando los Recuadros Verdes
+                # Extracción de Tiempos usando los Recuadros Verdes (Incluyendo Locomotoras Rojas)
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
