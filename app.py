@@ -785,9 +785,9 @@ try:
             max_mins = max((f - i).total_seconds() for i, f in net_intervals) / 60.0
             return total_mins, max_mins
 
-        # --- LÓGICA 3: LIMPIEZA DE GANTT Y TABLAS (Solución "Cookie-Cutter" para retornos de etapa) ---
+        # --- LÓGICA 3: LIMPIEZA DE TIEMPOS (Cookie-Cutter para armar tiempos y Gantt visual) ---
         def limpiar_bombeo_sin_dual(df_pump):
-            if df_pump.empty: return df_pump
+            if df_pump.empty: return df_pump.copy()
             
             df_cl = df_pump.copy()
             df_cl['fecha_hora_inicio'] = pd.to_datetime(df_cl['fecha_hora_inicio'], errors='coerce')
@@ -795,7 +795,6 @@ try:
             df_cl = df_cl.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin'])
             df_cl = df_cl[df_cl['fecha_hora_fin'] > df_cl['fecha_hora_inicio']]
             
-            # Ordenamos por duración: las etapas cortas (interrupciones reales) "perforan" a las etapas largas sucias
             df_cl['duration'] = (df_cl['fecha_hora_fin'] - df_cl['fecha_hora_inicio']).dt.total_seconds()
             records = df_cl.sort_values('duration').to_dict('records')
             
@@ -812,14 +811,12 @@ try:
                     new_segments = []
                     for s_ini, s_fin in segments_of_current:
                         if f_fin <= s_ini or f_ini >= s_fin:
-                            new_segments.append((s_ini, s_fin)) # Sin solapamiento
+                            new_segments.append((s_ini, s_fin))
                         else:
-                            # Solapamiento: partimos la etapa y guardamos las "puntas"
                             if s_ini < f_ini: new_segments.append((s_ini, f_ini))
                             if s_fin > f_fin: new_segments.append((f_fin, s_fin))
                     segments_of_current = new_segments
                     
-                # Guardamos los pedazos que sobrevivieron (ej. el bloque violeta)
                 for s_ini, s_fin in segments_of_current:
                     if (s_fin - s_ini).total_seconds() >= 60:
                         seg = current.copy()
@@ -827,12 +824,14 @@ try:
                         seg['fecha_hora_fin'] = s_fin
                         final_segments.append(seg)
                         
+            if not final_segments:
+                return pd.DataFrame(columns=df_pump.columns)
+                
             df_res = pd.DataFrame(final_segments)
             if 'duration' in df_res.columns: df_res = df_res.drop(columns=['duration'])
             df_res = df_res.sort_values('fecha_hora_inicio').reset_index(drop=True)
             
             df_res['Bombeo_Total_min'] = (df_res['fecha_hora_fin'] - df_res['fecha_hora_inicio']).dt.total_seconds() / 60
-            
             gap_corregido = (df_res['fecha_hora_inicio'] - df_res['fecha_hora_fin'].shift(1)).dt.total_seconds() / 60
             if 'es_cp_tecnico' in df_res.columns:
                 df_res['es_cp_tecnico'] = df_res['es_cp_tecnico'].fillna(False) & (gap_corregido <= 5)
@@ -865,13 +864,13 @@ try:
             pad_idx_c = pads_disp.index(pad_def_c) if (sel_yac_c1 == yac_def_c and pad_def_c in pads_disp) else 0
             with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp, index=pad_idx_c)
             
+            # --- DF ORIGINAL: Intacto (1 fila = 1 etapa) para conteo ---
             df_c1_h9 = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].copy()
             df_c1_h9 = df_c1_h9.sort_values('fecha_hora_inicio').drop_duplicates(subset=['nombre_pozo', 'nro_etapa', 'fecha_hora_inicio'])
-            
             df_c1_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
-            # APLICAMOS LA MAGIA DEL COOKIE-CUTTER
-            df_c1_h9 = limpiar_bombeo_sin_dual(df_c1_h9)
+            # --- DF LIMPIO: Recortado solo para Tiempos y Gantt ---
+            df_h9_limpio = limpiar_bombeo_sin_dual(df_c1_h9)
             
             if not df_c1_h9.empty:
                 min_date_c1 = pd.to_datetime(df_c1_h9['fecha_reporte']).min().date()
@@ -887,14 +886,21 @@ try:
             else:
                 f_inicio_c1, f_fin_c1 = fechas_c1[0], fechas_c1[0]
             
-            df_c1_h9['bloque_id'] = (~df_c1_h9['es_cp_tecnico'].fillna(False)).cumsum()
-            bloque_stats = df_c1_h9.groupby('bloque_id').agg(etapas_en_bloque=('nro_etapa', 'count')).reset_index()
-            df_c1_h9 = df_c1_h9.merge(bloque_stats, on='bloque_id', how='left')
-            df_c1_h9['es_bloque_cp'] = df_c1_h9['etapas_en_bloque'] > 1
+            # Calculamos bloques en el df limpio para evaluar los tiempos
+            if not df_h9_limpio.empty:
+                df_h9_limpio['bloque_id'] = (~df_h9_limpio['es_cp_tecnico'].fillna(False)).cumsum()
+                bloque_stats = df_h9_limpio.groupby('bloque_id').agg(segmentos_en_bloque=('nro_etapa', 'count')).reset_index()
+                df_h9_limpio = df_h9_limpio.merge(bloque_stats, on='bloque_id', how='left')
+                df_h9_limpio['es_bloque_cp'] = df_h9_limpio['segmentos_en_bloque'] > 1
 
+            # Convertimos fechas
             df_c1_h9['fecha_reporte'] = pd.to_datetime(df_c1_h9['fecha_reporte']).dt.date
             df_c1_h9['fecha_reporte_cp'] = pd.to_datetime(df_c1_h9['fecha_reporte_cp']).dt.date
             df_c1_h2['fecha_reporte'] = pd.to_datetime(df_c1_h2['fecha_reporte']).dt.date
+            
+            if not df_h9_limpio.empty:
+                df_h9_limpio['fecha_reporte'] = pd.to_datetime(df_h9_limpio['fecha_reporte']).dt.date
+                df_h9_limpio['fecha_reporte_cp'] = pd.to_datetime(df_h9_limpio['fecha_reporte_cp']).dt.date
             
             st.subheader(f"Cuadro 1 - Evolución CP ({sel_pad_c1})")
             
@@ -912,11 +918,12 @@ try:
             posibles_acum_ayer = 0
             
             for fecha in fechas_pad:
+                # 1. Contamos Etapas en la BASE ORIGINAL
                 df_dia_h9_fin = df_c1_h9[df_c1_h9['fecha_reporte'] == fecha]
                 df_dia_h9_inicio = df_c1_h9[df_c1_h9['fecha_reporte_cp'] == fecha]
                 df_dia_h2 = df_c1_h2[df_c1_h2['fecha_reporte'] == fecha]
                 
-                etapas_dia = len(df_dia_h9_fin)
+                etapas_dia = len(df_dia_h9_fin) # ¡Acá vuelve a dar perfecto!
                 cp_dia = df_dia_h9_inicio['es_cp_tecnico'].fillna(False).sum() if 'es_cp_tecnico' in df_dia_h9_inicio.columns else 0
                 
                 if 'duracion_minutos' in df_dia_h2.columns:
@@ -937,12 +944,12 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
+                # 2. Calculamos Tiempos en la BASE LIMPIA
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
-                df_tiempos = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin']).copy()
-                
-                if not df_tiempos.empty:
+                if not df_h9_limpio.empty:
+                    df_tiempos = df_h9_limpio.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin']).copy()
                     df_tiempos['overlap_inicio'] = np.maximum(df_tiempos['fecha_hora_inicio'], inicio_ventana)
                     df_tiempos['overlap_fin'] = np.minimum(df_tiempos['fecha_hora_fin'], fin_ventana)
                     df_tiempos['minutos_en_ventana'] = (df_tiempos['overlap_fin'] - df_tiempos['overlap_inicio']).dt.total_seconds() / 60
@@ -996,7 +1003,8 @@ try:
             
             st.subheader("Línea de Tiempo (Gantt) - FRAC & CP")
             
-            df_gantt_base = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
+            # GANTT SE DIBUJA CON LA BASE LIMPIA (Recortada)
+            df_gantt_base = df_h9_limpio.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
             
             if not df_gantt_base.empty:
                 df_gantt_base = df_gantt_base[(pd.to_datetime(df_gantt_base['fecha_reporte']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_gantt_base['fecha_reporte']).dt.date <= f_fin_c1)]
@@ -1007,9 +1015,8 @@ try:
                 df_gantt_base['Tipo_FRAC'] = np.where(df_gantt_base['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
                 df_gantt_base['Etapa Nro'] = df_gantt_base['nro_etapa'].astype(str)
                 
-                # --- EL HACHAZO VISUAL DE NPT ---
+                # Hachazo Visual por NPT para que no dibuje en los huecos
                 gantt_split = []
-                
                 if df_npt_pad is not None and not df_npt_pad.empty:
                     df_npt_gantt = df_npt_pad.dropna(subset=['fecha_inicio', 'fecha_fin']).copy()
                     df_npt_gantt['fecha_inicio'] = pd.to_datetime(df_npt_gantt['fecha_inicio'])
@@ -1067,6 +1074,7 @@ try:
             
             with col_t1:
                 st.subheader("Listado de Transiciones")
+                # LAS TABLAS SE ARMAN CON LA BASE ORIGINAL PARA EVITAR FALSOS DUPLICADOS
                 if 'transicion_cp_con_nueva_logica_chequeo' in df_c1_h9.columns:
                     df_trans = df_c1_h9[df_c1_h9['transicion_cp_con_nueva_logica_chequeo'].notna() & (df_c1_h9['transicion_cp_con_nueva_logica_chequeo'] != "")].copy().sort_values('fecha_hora_inicio')
                     df_trans = df_trans[(pd.to_datetime(df_trans['fecha_reporte_cp']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_trans['fecha_reporte_cp']).dt.date <= f_fin_c1)]
@@ -1114,13 +1122,15 @@ try:
                 df_pad_h9 = df_pad_h9.sort_values('fecha_hora_inicio').drop_duplicates(subset=['nombre_pozo', 'nro_etapa', 'fecha_hora_inicio'])
                 df_pad_h2 = df_h2[df_h2['PAD'] == pad].copy()
                 
-                df_pad_h9 = limpiar_bombeo_sin_dual(df_pad_h9)
+                # Base limpia solo para tiempos
+                df_pad_h9_limpio = limpiar_bombeo_sin_dual(df_pad_h9)
                 df_npt_gerencial = df_pad_h2[df_pad_h2['es_npt'] == True].copy() if 'es_npt' in df_pad_h2.columns else pd.DataFrame()
                 
-                df_pad_h9['bloque_id'] = (~df_pad_h9['es_cp_tecnico'].fillna(False)).cumsum()
-                b_stats = df_pad_h9.groupby('bloque_id').agg(etapas_en_bloque=('nro_etapa', 'count')).reset_index()
-                df_pad_h9 = df_pad_h9.merge(b_stats, on='bloque_id', how='left')
-                df_pad_h9['es_bloque_cp'] = df_pad_h9['etapas_en_bloque'] > 1
+                if not df_pad_h9_limpio.empty:
+                    df_pad_h9_limpio['bloque_id'] = (~df_pad_h9_limpio['es_cp_tecnico'].fillna(False)).cumsum()
+                    b_stats = df_pad_h9_limpio.groupby('bloque_id').agg(segmentos_en_bloque=('nro_etapa', 'count')).reset_index()
+                    df_pad_h9_limpio = df_pad_h9_limpio.merge(b_stats, on='bloque_id', how='left')
+                    df_pad_h9_limpio['es_bloque_cp'] = df_pad_h9_limpio['segmentos_en_bloque'] > 1
                 
                 yac = df_pad_h9['Yacimiento'].iloc[0]
                 std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
@@ -1128,6 +1138,7 @@ try:
                 max_fecha = df_pad_h9['fecha_reporte'].max()
                 ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
                 
+                # CONTADORES EXACTOS DE LA BASE ORIGINAL
                 etapas_totales = len(df_pad_h9)
                 cp_totales = df_pad_h9['es_cp_tecnico'].fillna(False).sum() if 'es_cp_tecnico' in df_pad_h9.columns else 0
                 etapas_posibles = max(0, etapas_totales - 4)
@@ -1147,29 +1158,30 @@ try:
                 tiempo_total_cp_pad = 0
                 max_cp_diario_pad = 0
                 
-                for f in fechas_unicas:
-                    inv = pd.to_datetime(f) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
-                    fnv = pd.to_datetime(f) + pd.Timedelta(hours=6)
-                    
-                    df_tiempos = df_pad_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin']).copy()
-                    if df_tiempos.empty: continue
+                if not df_pad_h9_limpio.empty:
+                    for f in fechas_unicas:
+                        inv = pd.to_datetime(f) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
+                        fnv = pd.to_datetime(f) + pd.Timedelta(hours=6)
                         
-                    df_tiempos['overlap_inicio'] = np.maximum(df_tiempos['fecha_hora_inicio'], inv)
-                    df_tiempos['overlap_fin'] = np.minimum(df_tiempos['fecha_hora_fin'], fnv)
-                    df_tiempos['minutos_en_ventana'] = (df_tiempos['overlap_fin'] - df_tiempos['overlap_inicio']).dt.total_seconds() / 60
-                    
-                    df_cp_hoy = df_tiempos[df_tiempos['minutos_en_ventana'] > 0].copy()
-                    
-                    if not df_cp_hoy.empty:
-                        tiempo_bombeo_pad += calcular_minutos_netos(df_cp_hoy, df_npt_gerencial) / 60
+                        df_tiempos = df_pad_h9_limpio.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin']).copy()
+                        if df_tiempos.empty: continue
+                            
+                        df_tiempos['overlap_inicio'] = np.maximum(df_tiempos['fecha_hora_inicio'], inv)
+                        df_tiempos['overlap_fin'] = np.minimum(df_tiempos['fecha_hora_fin'], fnv)
+                        df_tiempos['minutos_en_ventana'] = (df_tiempos['overlap_fin'] - df_tiempos['overlap_inicio']).dt.total_seconds() / 60
                         
-                        df_bloques_hoy = df_cp_hoy[df_cp_hoy['es_bloque_cp']]
-                        if not df_bloques_hoy.empty:
-                            for b_id, group in df_bloques_hoy.groupby('bloque_id'):
-                                b_tot_min, b_max_min = calcular_tiempos_cp_bloque(group, df_npt_gerencial)
-                                tiempo_total_cp_pad += (b_tot_min / 60)
-                                if (b_max_min / 60) > max_cp_diario_pad:
-                                    max_cp_diario_pad = (b_max_min / 60)
+                        df_hoy_pad = df_tiempos[df_tiempos['minutos_en_ventana'] > 0].copy()
+                        
+                        if not df_hoy_pad.empty:
+                            tiempo_bombeo_pad += calcular_minutos_netos(df_hoy_pad, df_npt_gerencial) / 60
+                            
+                            df_bloques_hoy = df_hoy_pad[df_hoy_pad['es_bloque_cp']]
+                            if not df_bloques_hoy.empty:
+                                for b_id, group in df_bloques_hoy.groupby('bloque_id'):
+                                    b_tot_min, b_max_min = calcular_tiempos_cp_bloque(group, df_npt_gerencial)
+                                    tiempo_total_cp_pad += (b_tot_min / 60)
+                                    if (b_max_min / 60) > max_cp_diario_pad:
+                                        max_cp_diario_pad = (b_max_min / 60)
                 
                 resumen_cp.append({
                     "Yacimiento": yac,
