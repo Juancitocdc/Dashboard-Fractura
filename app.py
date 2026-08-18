@@ -699,46 +699,115 @@ try:
     elif seccion == "🔄 Sección 2: Continuous Pumping":
         st.title("🔄 Continuous Pumping")
         
-        # --- FUNCIONES MAESTRAS DE AUDITORÍA Y LIMPIEZA ---
-        def has_npt_in_gap(p_end, c_start, df_npts):
-            if pd.isna(p_end) or pd.isna(c_start): return False
-            if df_npts is None or df_npts.empty: return False
+        # --- LÓGICA 1: PARA TIEMPO TOTAL DE BOMBEO NETO (Descuenta NPTs en el cálculo de horas) ---
+        def obtener_intervalos_netos(df_pumping, df_npt):
+            if df_pumping.empty: return []
             
-            # Un NPT anula el CP si ocurre en el medio del gap, o si termina en el segundo exacto que arranca la etapa
-            mask_overlap = (df_npts['fecha_inicio'] < c_start) & (df_npts['fecha_fin'] > p_end)
-            mask_touch_end = (df_npts['fecha_fin'] == c_start)
-            return (mask_overlap | mask_touch_end).any()
+            int_pump = df_pumping[['overlap_inicio', 'overlap_fin']].sort_values('overlap_inicio').values.tolist()
+            merged_pump = [int_pump[0]]
+            for actual in int_pump[1:]:
+                prev = merged_pump[-1]
+                if actual[0] <= prev[1]:
+                    merged_pump[-1] = [prev[0], max(prev[1], actual[1])]
+                else:
+                    merged_pump.append(actual)
+                    
+            if df_npt is None or df_npt.empty: return merged_pump
+                
+            df_npt_val = df_npt.copy().dropna(subset=['fecha_inicio', 'fecha_fin']).sort_values('fecha_inicio')
+            if df_npt_val.empty: return merged_pump
+            
+            int_npt = df_npt_val[['fecha_inicio', 'fecha_fin']].values.tolist()
+            merged_npt = [int_npt[0]]
+            for actual in int_npt[1:]:
+                prev = merged_npt[-1]
+                if actual[0] <= prev[1]:
+                    merged_npt[-1] = [prev[0], max(prev[1], actual[1])]
+                else:
+                    merged_npt.append(actual)
+                    
+            net_intervals = []
+            for p_start, p_end in merged_pump:
+                current_start = p_start
+                for n_start, n_end in merged_npt:
+                    if n_end <= current_start: continue
+                    if n_start >= p_end: break
+                    if n_start > current_start:
+                        net_intervals.append([current_start, n_start])
+                    current_start = max(current_start, n_end)
+                if current_start < p_end:
+                    net_intervals.append([current_start, p_end])
+            return net_intervals
 
-        def segmentar_bombeo(df_pump, df_npt):
+        def calcular_minutos_netos(df_pumping, df_npt):
+            intervalos = obtener_intervalos_netos(df_pumping, df_npt)
+            return sum((f - i).total_seconds() for i, f in intervalos) / 60.0
+
+        # --- LÓGICA 2: PARA CONTINUOUS PUMPING (Corta los Mega-Bloques de CP si un NPT los atraviesa) ---
+        def calcular_tiempos_cp_bloque(df_bloque, df_npt):
+            if df_bloque.empty: return 0, 0
+            
+            b_start = df_bloque['overlap_inicio'].min()
+            b_end = df_bloque['overlap_fin'].max()
+            merged_pump = [[b_start, b_end]]
+            
+            if df_npt is None or df_npt.empty:
+                merged_npt = []
+            else:
+                df_npt_val = df_npt.dropna(subset=['fecha_inicio', 'fecha_fin']).sort_values('fecha_inicio')
+                if df_npt_val.empty:
+                    merged_npt = []
+                else:
+                    int_npt = df_npt_val[['fecha_inicio', 'fecha_fin']].values.tolist()
+                    merged_npt = [int_npt[0]]
+                    for actual in int_npt[1:]:
+                        prev = merged_npt[-1]
+                        if actual[0] <= prev[1]:
+                            merged_npt[-1] = [prev[0], max(prev[1], actual[1])]
+                        else:
+                            merged_npt.append(actual)
+                            
+            net_intervals = []
+            for p_start, p_end in merged_pump:
+                current_start = p_start
+                for n_start, n_end in merged_npt:
+                    if n_end <= current_start: continue
+                    if n_start >= p_end: break
+                    if n_start > current_start:
+                        net_intervals.append([current_start, n_start])
+                    current_start = max(current_start, n_end)
+                if current_start < p_end:
+                    net_intervals.append([current_start, p_end])
+                    
+            if not net_intervals: return 0, 0
+            
+            total_mins = sum((f - i).total_seconds() for i, f in net_intervals) / 60.0
+            max_mins = max((f - i).total_seconds() for i, f in net_intervals) / 60.0
+            return total_mins, max_mins
+
+        # --- LÓGICA 3: LIMPIEZA DE TIEMPOS (Cookie-Cutter para armar tiempos y Gantt visual) ---
+        def limpiar_bombeo_sin_dual(df_pump):
             if df_pump.empty: return df_pump.copy()
-
+            
             df_cl = df_pump.copy()
             df_cl['fecha_hora_inicio'] = pd.to_datetime(df_cl['fecha_hora_inicio'], errors='coerce')
             df_cl['fecha_hora_fin'] = pd.to_datetime(df_cl['fecha_hora_fin'], errors='coerce')
             df_cl = df_cl.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin'])
             df_cl = df_cl[df_cl['fecha_hora_fin'] > df_cl['fecha_hora_inicio']]
-
-            npt_list = []
-            if df_npt is not None and not df_npt.empty:
-                df_n = df_npt.dropna(subset=['fecha_inicio', 'fecha_fin']).copy()
-                df_n['fecha_inicio'] = pd.to_datetime(df_n['fecha_inicio'])
-                df_n['fecha_fin'] = pd.to_datetime(df_n['fecha_fin'])
-                df_n = df_n[df_n['fecha_fin'] > df_n['fecha_inicio']]
-                npt_list = df_n[['fecha_inicio', 'fecha_fin']].values.tolist()
-
+            
             df_cl['duration'] = (df_cl['fecha_hora_fin'] - df_cl['fecha_hora_inicio']).dt.total_seconds()
             records = df_cl.sort_values('duration').to_dict('records')
-
+            
             final_segments = []
             for current in records:
                 c_ini = current['fecha_hora_inicio']
                 c_fin = current['fecha_hora_fin']
                 segments_of_current = [(c_ini, c_fin)]
-
-                # 1. Cortar No-Dual Pumping
+                
                 for final_seg in final_segments:
                     f_ini = final_seg['fecha_hora_inicio']
                     f_fin = final_seg['fecha_hora_fin']
+                    
                     new_segments = []
                     for s_ini, s_fin in segments_of_current:
                         if f_fin <= s_ini or f_ini >= s_fin:
@@ -747,64 +816,58 @@ try:
                             if s_ini < f_ini: new_segments.append((s_ini, f_ini))
                             if s_fin > f_fin: new_segments.append((f_fin, s_fin))
                     segments_of_current = new_segments
-
-                # 2. Cortar NPTs (Genera los huecos en blanco)
-                for n_ini, n_fin in npt_list:
-                    new_segments = []
-                    for s_ini, s_fin in segments_of_current:
-                        if n_fin <= s_ini or n_ini >= s_fin:
-                            new_segments.append((s_ini, s_fin))
-                        else:
-                            if s_ini < n_ini: new_segments.append((s_ini, n_ini))
-                            if s_fin > n_fin: new_segments.append((n_fin, s_fin))
-                    segments_of_current = new_segments
-
-                # Guardar limpieza
+                    
                 for s_ini, s_fin in segments_of_current:
                     if (s_fin - s_ini).total_seconds() >= 60:
                         seg = current.copy()
                         seg['fecha_hora_inicio'] = s_ini
                         seg['fecha_hora_fin'] = s_fin
                         final_segments.append(seg)
-
+                        
             if not final_segments:
                 return pd.DataFrame(columns=df_pump.columns)
-
-            df_res = pd.DataFrame(final_segments).sort_values('fecha_hora_inicio').reset_index(drop=True)
+                
+            df_res = pd.DataFrame(final_segments)
+            if 'duration' in df_res.columns: df_res = df_res.drop(columns=['duration'])
+            df_res = df_res.sort_values('fecha_hora_inicio').reset_index(drop=True)
+            
+            df_res['Bombeo_Total_min'] = (df_res['fecha_hora_fin'] - df_res['fecha_hora_inicio']).dt.total_seconds() / 60
+            gap_corregido = (df_res['fecha_hora_inicio'] - df_res['fecha_hora_fin'].shift(1)).dt.total_seconds() / 60
+            if 'es_cp_tecnico' in df_res.columns:
+                df_res['es_cp_tecnico'] = df_res['es_cp_tecnico'].fillna(False) & (gap_corregido <= 5)
+            else:
+                df_res['es_cp_tecnico'] = (gap_corregido.notna()) & (gap_corregido <= 5)
+                
             return df_res
 
-        def calcular_tiempos_cp_bloque(df_bloque, df_npt):
-            if df_bloque.empty: return 0, 0
-            
-            b_start = df_bloque['fecha_hora_inicio'].min()
-            b_end = df_bloque['fecha_hora_fin'].max()
-            
-            df_temp = pd.DataFrame([{'fecha_hora_inicio': b_start, 'fecha_hora_fin': b_end}])
-            df_limpio = segmentar_bombeo(df_temp, df_npt)
-            
-            if df_limpio.empty: return 0, 0
-            
-            total_mins = (df_limpio['fecha_hora_fin'] - df_limpio['fecha_hora_inicio']).dt.total_seconds().sum() / 60.0
-            max_mins = (df_limpio['fecha_hora_fin'] - df_limpio['fecha_hora_inicio']).dt.total_seconds().max() / 60.0
-            
-            return total_mins, max_mins
+        # --- LÓGICA 4: CRUZAMIENTO MAESTRO (AUDITORÍA) ---
+        def has_npt_in_gap(p_end, c_start, df_npts):
+            if pd.isna(p_end) or pd.isna(c_start): return False
+            if df_npts is None or df_npts.empty: return False
+            mask_overlap = (df_npts['fecha_inicio'] < c_start) & (df_npts['fecha_fin'] > p_end)
+            mask_touch_end = (df_npts['fecha_fin'] == c_start)
+            return (mask_overlap | mask_touch_end).any()
 
         def procesar_pad_cp(df_h9_pad, df_h2_pad):
-            df_p = df_h9_pad.copy().sort_values('fecha_hora_inicio').drop_duplicates(subset=['nombre_pozo', 'nro_etapa', 'fecha_hora_inicio'])
+            df_p = df_h9_pad.copy().sort_values('fecha_hora_inicio')
+            df_p['stage_id'] = df_p['nombre_pozo'].astype(str) + "_" + df_p['nro_etapa'].astype(str)
+            
+            # Eliminamos duplicados crudos para garantizar 1 fila = 1 etapa en la base original
+            df_p = df_p.drop_duplicates(subset=['stage_id'], keep='first')
+            
             df_npt = df_h2_pad[df_h2_pad['es_npt'] == True].copy() if 'es_npt' in df_h2_pad.columns else pd.DataFrame()
 
-            # Blindaje para evitar el KeyError
+            # Blindaje clave
             if 'es_cp_tecnico' not in df_p.columns:
                 df_p['es_cp_tecnico'] = False
 
-            df_l = segmentar_bombeo(df_p, df_npt)
+            df_l = limpiar_bombeo_sin_dual(df_p)
             
             df_l['bloque_id'] = 0
             df_l['es_bloque_cp'] = False
 
             if not df_l.empty and not df_p.empty:
                 df_l['stage_id'] = df_l['nombre_pozo'].astype(str) + "_" + df_l['nro_etapa'].astype(str)
-                df_p['stage_id'] = df_p['nombre_pozo'].astype(str) + "_" + df_p['nro_etapa'].astype(str)
 
                 real_starts = df_l.groupby('stage_id')['fecha_hora_inicio'].min()
                 real_ends = df_l.groupby('stage_id')['fecha_hora_fin'].max()
@@ -834,7 +897,10 @@ try:
 
                 df_p['es_cp_tecnico'] = valid_cp
 
-                df_l = df_l.merge(df_p[['stage_id', 'es_cp_tecnico']], on='stage_id', how='left')
+                # FIX: Borramos la columna vieja en df_l antes del merge para evitar sufijos _x y _y
+                df_l = df_l.drop(columns=['es_cp_tecnico'], errors='ignore').merge(
+                    df_p[['stage_id', 'es_cp_tecnico']], on='stage_id', how='left'
+                )
                 
                 df_l = df_l.sort_values('fecha_hora_inicio')
                 gap_seg = (df_l['fecha_hora_inicio'] - df_l['fecha_hora_fin'].shift(1)).dt.total_seconds() / 60
@@ -944,6 +1010,7 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
+                # Tijeretazo 24hs sobre la base LIMPIA
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
@@ -964,9 +1031,9 @@ try:
                         if not df_cp_hoy.empty:
                             for b_id, group in df_cp_hoy.groupby('bloque_id'):
                                 b_tot_min, b_max_min = calcular_tiempos_cp_bloque(group, df_npt_pad)
-                                tiempo_total_cp_dia += b_tot_min
-                                if b_max_min > max_tiempo_cp_dia:
-                                    max_tiempo_cp_dia = b_max_min
+                                tiempo_total_cp_dia += (b_tot_min / 60)
+                                if (b_max_min / 60) > max_tiempo_cp_dia:
+                                    max_tiempo_cp_dia = (b_max_min / 60)
                     else:
                         tiempo_bombeo_dia, tiempo_total_cp_dia, max_tiempo_cp_dia = 0, 0, 0
                 else:
@@ -1010,7 +1077,7 @@ try:
                 df_gantt_base = df_gantt_base.sort_values('fecha_hora_inicio')
                 df_gantt_base['Es_CP'] = df_gantt_base['es_cp_tecnico'].fillna(False) if 'es_cp_tecnico' in df_gantt_base.columns else False
                 df_gantt_base['Tipo_FRAC'] = np.where(df_gantt_base['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
-                df_gantt_base['Etapa Nro'] = df_gantt_base['nro_etapa'].astype(str)
+                df_gantt_base['Etapa Nro'] = df_gantt_base['stage_id'].str.split('_').str[-1]
                 df_gantt_base['Inicio_str'] = df_gantt_base['fecha_hora_inicio'].dt.strftime('%d/%m/%Y %H:%M')
                 df_gantt_base['Fin_str'] = df_gantt_base['fecha_hora_fin'].dt.strftime('%d/%m/%Y %H:%M')
                 
@@ -1126,9 +1193,9 @@ try:
                             if not df_bloques_hoy.empty:
                                 for b_id, group in df_bloques_hoy.groupby('bloque_id'):
                                     b_tot_min, b_max_min = calcular_tiempos_cp_bloque(group, df_npt_gerencial)
-                                    tiempo_total_cp_pad += b_tot_min
-                                    if b_max_min > max_cp_diario_pad:
-                                        max_cp_diario_pad = b_max_min
+                                    tiempo_total_cp_pad += (b_tot_min / 60)
+                                    if (b_max_min / 60) > max_cp_diario_pad:
+                                        max_cp_diario_pad = (b_max_min / 60)
                 
                 resumen_cp.append({
                     "Yacimiento": yac,
