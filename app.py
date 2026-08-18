@@ -693,7 +693,7 @@ try:
                 
             st.dataframe(pd.DataFrame(resumen_yac_tiempos), use_container_width=True, hide_index=True)
 
-# ==========================================
+    # ==========================================
     # DASHBOARD: SECCIÓN 2 (CONTINUOUS PUMPING)
     # ==========================================
     elif seccion == "🔄 Sección 2: Continuous Pumping":
@@ -785,31 +785,61 @@ try:
             max_mins = max((f - i).total_seconds() for i, f in net_intervals) / 60.0
             return total_mins, max_mins
 
-        # --- LÓGICA 3: LIMPIEZA DE GANTT Y TABLAS (Solo corta solapamientos de No-Dual Pumping) ---
+        # --- LÓGICA 3: LIMPIEZA DE GANTT Y TABLAS (Solución "Cookie-Cutter" para retornos de etapa) ---
         def limpiar_bombeo_sin_dual(df_pump):
             if df_pump.empty: return df_pump
             
-            df_cl = df_pump.sort_values('fecha_hora_inicio').copy()
+            df_cl = df_pump.copy()
             df_cl['fecha_hora_inicio'] = pd.to_datetime(df_cl['fecha_hora_inicio'], errors='coerce')
             df_cl['fecha_hora_fin'] = pd.to_datetime(df_cl['fecha_hora_fin'], errors='coerce')
+            df_cl = df_cl.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin'])
+            df_cl = df_cl[df_cl['fecha_hora_fin'] > df_cl['fecha_hora_inicio']]
             
-            # Solo cortamos si la Etapa B arranca ANTES de que la Etapa A termine (No-Dual Pumping)
-            next_start = df_cl['fecha_hora_inicio'].shift(-1)
-            mask_overlap = next_start.notna() & (df_cl['fecha_hora_fin'] > next_start)
-            df_cl.loc[mask_overlap, 'fecha_hora_fin'] = next_start[mask_overlap]
+            # Ordenamos por duración: las etapas cortas (interrupciones reales) "perforan" a las etapas largas sucias
+            df_cl['duration'] = (df_cl['fecha_hora_fin'] - df_cl['fecha_hora_inicio']).dt.total_seconds()
+            records = df_cl.sort_values('duration').to_dict('records')
             
-            df_cl['Bombeo_Total_min'] = (df_cl['fecha_hora_fin'] - df_cl['fecha_hora_inicio']).dt.total_seconds() / 60
-            df_cl['Bombeo_Total_min'] = df_cl['Bombeo_Total_min'].clip(lower=0)
-            
-            # El CP sigue pidiendo que el gap real sea menor o igual a 5
-            gap_corregido = (df_cl['fecha_hora_inicio'] - df_cl['fecha_hora_fin'].shift(1)).dt.total_seconds() / 60
-            
-            if 'es_cp_tecnico' in df_cl.columns:
-                df_cl['es_cp_tecnico'] = df_cl['es_cp_tecnico'].fillna(False) & (gap_corregido <= 5)
-            else:
-                df_cl['es_cp_tecnico'] = (gap_corregido.notna()) & (gap_corregido <= 5)
+            final_segments = []
+            for current in records:
+                c_ini = current['fecha_hora_inicio']
+                c_fin = current['fecha_hora_fin']
+                segments_of_current = [(c_ini, c_fin)]
                 
-            return df_cl
+                for final_seg in final_segments:
+                    f_ini = final_seg['fecha_hora_inicio']
+                    f_fin = final_seg['fecha_hora_fin']
+                    
+                    new_segments = []
+                    for s_ini, s_fin in segments_of_current:
+                        if f_fin <= s_ini or f_ini >= s_fin:
+                            new_segments.append((s_ini, s_fin)) # Sin solapamiento
+                        else:
+                            # Solapamiento: partimos la etapa y guardamos las "puntas"
+                            if s_ini < f_ini: new_segments.append((s_ini, f_ini))
+                            if s_fin > f_fin: new_segments.append((f_fin, s_fin))
+                    segments_of_current = new_segments
+                    
+                # Guardamos los pedazos que sobrevivieron (ej. el bloque violeta)
+                for s_ini, s_fin in segments_of_current:
+                    if (s_fin - s_ini).total_seconds() >= 60:
+                        seg = current.copy()
+                        seg['fecha_hora_inicio'] = s_ini
+                        seg['fecha_hora_fin'] = s_fin
+                        final_segments.append(seg)
+                        
+            df_res = pd.DataFrame(final_segments)
+            if 'duration' in df_res.columns: df_res = df_res.drop(columns=['duration'])
+            df_res = df_res.sort_values('fecha_hora_inicio').reset_index(drop=True)
+            
+            df_res['Bombeo_Total_min'] = (df_res['fecha_hora_fin'] - df_res['fecha_hora_inicio']).dt.total_seconds() / 60
+            
+            gap_corregido = (df_res['fecha_hora_inicio'] - df_res['fecha_hora_fin'].shift(1)).dt.total_seconds() / 60
+            if 'es_cp_tecnico' in df_res.columns:
+                df_res['es_cp_tecnico'] = df_res['es_cp_tecnico'].fillna(False) & (gap_corregido <= 5)
+            else:
+                df_res['es_cp_tecnico'] = (gap_corregido.notna()) & (gap_corregido <= 5)
+                
+            return df_res
         # -----------------------------------------------------------
         
         if 'fecha_reporte' in df_h9.columns and not df_h9.empty:
@@ -840,7 +870,7 @@ try:
             
             df_c1_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
-            # APLICAMOS LIMPIEZA VISUAL (No rompe la etapa por NPT)
+            # APLICAMOS LA MAGIA DEL COOKIE-CUTTER
             df_c1_h9 = limpiar_bombeo_sin_dual(df_c1_h9)
             
             if not df_c1_h9.empty:
@@ -873,7 +903,6 @@ try:
             
             std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
             
-            # Traemos los NPTs para la matemática oculta
             df_npt_pad = df_c1_h2[df_c1_h2['es_npt'] == True].copy() if 'es_npt' in df_c1_h2.columns else pd.DataFrame()
             
             datos_cp = []
@@ -978,10 +1007,9 @@ try:
                 df_gantt_base['Tipo_FRAC'] = np.where(df_gantt_base['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
                 df_gantt_base['Etapa Nro'] = df_gantt_base['nro_etapa'].astype(str)
                 
-                # --- NUEVO: EL HACHAZO VISUAL (Parte las etapas si hubo NPT en el medio) ---
+                # --- EL HACHAZO VISUAL DE NPT ---
                 gantt_split = []
                 
-                # Aseguramos que los NPTs tengan fecha fin para comparar
                 if df_npt_pad is not None and not df_npt_pad.empty:
                     df_npt_gantt = df_npt_pad.dropna(subset=['fecha_inicio', 'fecha_fin']).copy()
                     df_npt_gantt['fecha_inicio'] = pd.to_datetime(df_npt_gantt['fecha_inicio'])
@@ -997,7 +1025,6 @@ try:
                     tipo = row['Tipo_FRAC']
                     
                     if not df_npt_gantt.empty:
-                        # Buscamos NPTs que se crucen con esta etapa
                         npts_in = df_npt_gantt[(df_npt_gantt['fecha_inicio'] < fin) & (df_npt_gantt['fecha_fin'] > ini)].sort_values('fecha_inicio')
                         
                         if npts_in.empty:
@@ -1008,23 +1035,18 @@ try:
                                 npt_ini = max(curr_ini, npt['fecha_inicio'])
                                 npt_fin = min(fin, npt['fecha_fin'])
                                 
-                                # Guardamos el pedazo de bombeo antes del NPT
                                 if npt_ini > curr_ini:
                                     gantt_split.append({'nombre_pozo': pozo, 'Etapa Nro': etapa, 'Tipo_FRAC': tipo, 'fecha_hora_inicio': curr_ini, 'fecha_hora_fin': npt_ini})
                                 
-                                # Movemos el inicio al final del NPT
                                 curr_ini = max(curr_ini, npt_fin)
                             
-                            # Guardamos el pedazo de bombeo que sobró después del último NPT
                             if curr_ini < fin:
                                 gantt_split.append({'nombre_pozo': pozo, 'Etapa Nro': etapa, 'Tipo_FRAC': tipo, 'fecha_hora_inicio': curr_ini, 'fecha_hora_fin': fin})
                     else:
                         gantt_split.append({'nombre_pozo': pozo, 'Etapa Nro': etapa, 'Tipo_FRAC': tipo, 'fecha_hora_inicio': ini, 'fecha_hora_fin': fin})
                 
-                # Armamos el DataFrame final ya particionado
                 df_gantt = pd.DataFrame(gantt_split)
                 
-                # --- FORMATO Y DIBUJO ---
                 df_gantt['Inicio_str'] = df_gantt['fecha_hora_inicio'].dt.strftime('%d/%m/%Y %H:%M')
                 df_gantt['Fin_str'] = df_gantt['fecha_hora_fin'].dt.strftime('%d/%m/%Y %H:%M')
                 
@@ -1136,12 +1158,12 @@ try:
                     df_tiempos['overlap_fin'] = np.minimum(df_tiempos['fecha_hora_fin'], fnv)
                     df_tiempos['minutos_en_ventana'] = (df_tiempos['overlap_fin'] - df_tiempos['overlap_inicio']).dt.total_seconds() / 60
                     
-                    df_hoy_pad = df_tiempos[df_tiempos['minutos_en_ventana'] > 0].copy()
+                    df_cp_hoy = df_tiempos[df_tiempos['minutos_en_ventana'] > 0].copy()
                     
-                    if not df_hoy_pad.empty:
-                        tiempo_bombeo_pad += calcular_minutos_netos(df_hoy_pad, df_npt_gerencial) / 60
+                    if not df_cp_hoy.empty:
+                        tiempo_bombeo_pad += calcular_minutos_netos(df_cp_hoy, df_npt_gerencial) / 60
                         
-                        df_bloques_hoy = df_hoy_pad[df_hoy_pad['es_bloque_cp']]
+                        df_bloques_hoy = df_cp_hoy[df_cp_hoy['es_bloque_cp']]
                         if not df_bloques_hoy.empty:
                             for b_id, group in df_bloques_hoy.groupby('bloque_id'):
                                 b_tot_min, b_max_min = calcular_tiempos_cp_bloque(group, df_npt_gerencial)
