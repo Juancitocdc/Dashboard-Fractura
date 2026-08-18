@@ -722,13 +722,13 @@ try:
                         if f_fin <= s_ini or f_ini >= s_fin:
                             new_segments.append((s_ini, s_fin)) 
                         else:
-                            # Parte la etapa a la mitad
+                            # Parte la etapa a la mitad (Permite los retornos / cuadrados violetas)
                             if s_ini < f_ini: new_segments.append((s_ini, f_ini))
                             if s_fin > f_fin: new_segments.append((f_fin, s_fin))
                     segments_of_current = new_segments
                 
                 for s_ini, s_fin in segments_of_current:
-                    if (s_fin - s_ini).total_seconds() >= 60: 
+                    if (s_fin - s_ini).total_seconds() >= 60: # Descartar micro-basura < 1 min
                         seg = current.copy()
                         seg['fecha_hora_inicio'] = s_ini
                         seg['fecha_hora_fin'] = s_fin
@@ -810,64 +810,66 @@ try:
             real_starts = df_frag.groupby('stage_id')['fecha_hora_inicio'].min()
             real_ends = df_frag.groupby('stage_id')['fecha_hora_fin'].max()
             
-            # 3. CRONOLOGÍA ESTRICTA (Evaluación de saltos y retornos)
-            stage_status = {}
-            true_prev_stage = {}
+            # 3. CRONOLOGÍA ESTRICTA (Evaluación de saltos, retornos y trenes de bombeo)
             colores = []
+            true_prev_stage = {}
+            breaks_physical_block = [False] # El primer fragmento inicia el tren
             
             for i in range(len(df_frag)):
                 frag = df_frag.iloc[i]
                 stage_id = frag['stage_id']
-                is_frag_start = (frag['fecha_hora_inicio'] == real_starts[stage_id])
-                
-                base_cp = df_p.loc[df_p['stage_id'] == stage_id, 'es_cp_tecnico'].values
-                es_valido_backend = base_cp[0] if len(base_cp) > 0 else False
                 
                 if i == 0:
-                    colores.append(es_valido_backend)
-                    if is_frag_start: stage_status[stage_id] = es_valido_backend
+                    base_cp = df_p.loc[df_p['stage_id'] == stage_id, 'es_cp_tecnico'].values
+                    colores.append(base_cp[0] if len(base_cp) > 0 else False)
                     continue
                     
                 prev_frag = df_frag.iloc[i-1]
                 gap_mins = (frag['fecha_hora_inicio'] - prev_frag['fecha_hora_fin']).total_seconds() / 60.0
                 
-                # REGLA DE ORO: ¿La etapa anterior terminó su trabajo (llegó a su final absoluto)?
-                is_prev_final = (prev_frag['fecha_hora_fin'] == real_ends[prev_frag['stage_id']])
+                has_npt = has_npt_in_gap(prev_frag['fecha_hora_fin'], frag['fecha_hora_inicio'], df_npt)
                 
-                if gap_mins > 5 or has_npt_in_gap(prev_frag['fecha_hora_fin'], frag['fecha_hora_inicio'], df_npt):
-                    # NPT o tardaron mucho -> Rojo
-                    color = False
+                # --- BLOQUE FÍSICO (Los recuadros verdes de tu imagen) ---
+                # Si el gap > 5 o hay NPT, se rompe el tren físico de bombeo.
+                if gap_mins > 5 or has_npt:
+                    breaks_physical_block.append(True)
                 else:
-                    if not is_prev_final:
-                        # Cambio intermedio! Saltar de pozo sin terminar anula el CP de la etapa nueva -> Rojo
-                        color = False
+                    breaks_physical_block.append(False)
+                
+                # --- COLOR VISUAL Y CP LOGRADO (Las flechas rojas y verdes) ---
+                if gap_mins > 5 or has_npt:
+                    color = False # Excedió tiempo o hubo NPT en el hueco
+                else:
+                    is_same_stage = (stage_id == prev_frag['stage_id'])
+                    if is_same_stage:
+                        color = colores[-1] # Mantiene su color a través del micro-corte
                     else:
-                        if is_frag_start:
-                            # Arranque de etapa limpia después de que la anterior cerró.
-                            color = es_valido_backend
-                            if color: true_prev_stage[stage_id] = prev_frag['stage_id']
+                        is_prev_final = (prev_frag['fecha_hora_fin'] == real_ends[prev_frag['stage_id']])
+                        if not is_prev_final:
+                            color = False # Cambio intermedio -> Rojo
                         else:
-                            # Es un Retorno a una etapa vieja que se había pausado. Mantiene su color.
-                            color = stage_status.get(stage_id, False)
-                            
+                            color = True # Transición válida y continua -> Verde
+                            if stage_id not in true_prev_stage:
+                                true_prev_stage[stage_id] = prev_frag['stage_id']
+                                
                 colores.append(color)
-                if is_frag_start: stage_status[stage_id] = color
                 
             df_frag['es_cp_final'] = colores
+            df_frag['break_block'] = breaks_physical_block
+            df_frag['bloque_id'] = df_frag['break_block'].cumsum()
+            
+            # Un "Tren de Bombeo Máximo" es cualquier bloque que involucró más de un fragmento/etapa
+            b_counts = df_frag.groupby('bloque_id')['stage_id'].transform('nunique')
+            df_frag['es_bloque_cp'] = b_counts > 1
             
             # 4. Impactar resultado en la base original
-            df_p['es_cp_final'] = df_p['stage_id'].map(stage_status).fillna(False)
+            cp_por_etapa = df_frag.groupby('stage_id')['es_cp_final'].any()
+            df_p['es_cp_final'] = df_p['stage_id'].map(cp_por_etapa).fillna(False)
             
             df_p['prev_stage_id'] = df_p['stage_id'].map(true_prev_stage)
             stage_text_map = dict(zip(df_p['stage_id'], df_p['nombre_pozo'].astype(str) + " Etapa " + df_p['nro_etapa'].astype(str)))
             df_p['pozo_etapa_actual'] = df_p['stage_id'].map(stage_text_map)
             df_p['pozo_etapa_anterior'] = df_p['prev_stage_id'].map(stage_text_map).fillna("Inicio / NPT")
-            
-            # 5. Agrupación para Máximo CP Diario
-            df_frag['gap_frag'] = (df_frag['fecha_hora_inicio'] - df_frag['fecha_hora_fin'].shift(1)).dt.total_seconds() / 60
-            df_frag['nuevo_bloque'] = (~df_frag['es_cp_final']) | (df_frag['gap_frag'] > 5)
-            df_frag['bloque_id'] = df_frag['nuevo_bloque'].cumsum()
-            df_frag['es_bloque_cp'] = df_frag['es_cp_final']
             
             return df_p, df_frag
         # -----------------------------------------------------------
@@ -959,7 +961,7 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # Horas Netas con la base pre-limpiada
+                # Extracción de Tiempos usando los Recuadros Verdes
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
@@ -975,6 +977,7 @@ try:
                         tiempo_bombeo_dia = df_hoy['minutos_en_ventana'].sum() / 60
                         df_cp_hoy = df_hoy[df_hoy['es_bloque_cp'] == True]
                         tiempo_total_cp_dia = df_cp_hoy['minutos_en_ventana'].sum() / 60
+                        
                         max_tiempo_cp_dia = df_cp_hoy.groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60 if not df_cp_hoy.empty else 0
                     else:
                         tiempo_bombeo_dia, tiempo_total_cp_dia, max_tiempo_cp_dia = 0, 0, 0
@@ -995,6 +998,7 @@ try:
                     "Maximo Tiempo de Bombeo Continuo Diario (hr)": round(max_tiempo_cp_dia, 2),
                     "Etapas Posibles CP (Acum-4)": posibles_acum_hoy
                 })
+                
                 posibles_acum_ayer = posibles_acum_hoy
                 
             columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo Diario (hr)", "Etapas Posibles CP (Acum-4)"]
