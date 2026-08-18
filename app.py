@@ -852,12 +852,10 @@ try:
             df_p = df_h9_pad.copy().sort_values('fecha_hora_inicio')
             df_p['stage_id'] = df_p['nombre_pozo'].astype(str) + "_" + df_p['nro_etapa'].astype(str)
             
-            # Eliminamos duplicados crudos para garantizar 1 fila = 1 etapa en la base original
             df_p = df_p.drop_duplicates(subset=['stage_id'], keep='first')
             
             df_npt = df_h2_pad[df_h2_pad['es_npt'] == True].copy() if 'es_npt' in df_h2_pad.columns else pd.DataFrame()
 
-            # Blindaje clave
             if 'es_cp_tecnico' not in df_p.columns:
                 df_p['es_cp_tecnico'] = False
 
@@ -897,7 +895,6 @@ try:
 
                 df_p['es_cp_tecnico'] = valid_cp
 
-                # FIX: Borramos la columna vieja en df_l antes del merge para evitar sufijos _x y _y
                 df_l = df_l.drop(columns=['es_cp_tecnico'], errors='ignore').merge(
                     df_p[['stage_id', 'es_cp_tecnico']], on='stage_id', how='left'
                 )
@@ -943,11 +940,12 @@ try:
             pad_idx_c = pads_disp.index(pad_def_c) if (sel_yac_c1 == yac_def_c and pad_def_c in pads_disp) else 0
             with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp, index=pad_idx_c)
             
+            # --- FIX DEL ERROR DE NOMBRE ACÁ ---
             df_pad_raw = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].copy()
-            df_pad_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
+            df_c1_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
-            # Ejecuta la función maestra que arregla las flechas y genera las bases
-            df_c1_h9, df_h9_limpio = procesar_pad_cp(df_pad_raw, df_pad_h2)
+            # Ejecuta la función maestra
+            df_c1_h9, df_h9_limpio = procesar_pad_cp(df_pad_raw, df_c1_h2)
             
             if not df_c1_h9.empty:
                 min_date_c1 = pd.to_datetime(df_c1_h9['fecha_reporte']).min().date()
@@ -1010,7 +1008,6 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # Tijeretazo 24hs sobre la base LIMPIA
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
