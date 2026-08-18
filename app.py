@@ -967,16 +967,64 @@ try:
             
             st.subheader("Línea de Tiempo (Gantt) - FRAC & CP")
             
-            df_gantt = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
+            df_gantt_base = df_c1_h9.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin', 'nombre_pozo']).copy()
             
-            if not df_gantt.empty:
-                df_gantt = df_gantt[(pd.to_datetime(df_gantt['fecha_reporte']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_gantt['fecha_reporte']).dt.date <= f_fin_c1)]
+            if not df_gantt_base.empty:
+                df_gantt_base = df_gantt_base[(pd.to_datetime(df_gantt_base['fecha_reporte']).dt.date >= f_inicio_c1) & (pd.to_datetime(df_gantt_base['fecha_reporte']).dt.date <= f_fin_c1)]
             
-            if not df_gantt.empty:
-                df_gantt = df_gantt.sort_values('fecha_hora_inicio')
-                df_gantt['Es_CP'] = df_gantt['es_cp_tecnico'].fillna(False) if 'es_cp_tecnico' in df_gantt.columns else False
-                df_gantt['Tipo_FRAC'] = np.where(df_gantt['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
-                df_gantt['Etapa Nro'] = df_gantt['nro_etapa'].astype(str)
+            if not df_gantt_base.empty:
+                df_gantt_base = df_gantt_base.sort_values('fecha_hora_inicio')
+                df_gantt_base['Es_CP'] = df_gantt_base['es_cp_tecnico'].fillna(False) if 'es_cp_tecnico' in df_gantt_base.columns else False
+                df_gantt_base['Tipo_FRAC'] = np.where(df_gantt_base['Es_CP'], 'FRAC (Con CP)', 'FRAC (Sin CP)')
+                df_gantt_base['Etapa Nro'] = df_gantt_base['nro_etapa'].astype(str)
+                
+                # --- NUEVO: EL HACHAZO VISUAL (Parte las etapas si hubo NPT en el medio) ---
+                gantt_split = []
+                
+                # Aseguramos que los NPTs tengan fecha fin para comparar
+                if df_npt_pad is not None and not df_npt_pad.empty:
+                    df_npt_gantt = df_npt_pad.dropna(subset=['fecha_inicio', 'fecha_fin']).copy()
+                    df_npt_gantt['fecha_inicio'] = pd.to_datetime(df_npt_gantt['fecha_inicio'])
+                    df_npt_gantt['fecha_fin'] = pd.to_datetime(df_npt_gantt['fecha_fin'])
+                else:
+                    df_npt_gantt = pd.DataFrame()
+
+                for _, row in df_gantt_base.iterrows():
+                    ini = pd.to_datetime(row['fecha_hora_inicio'])
+                    fin = pd.to_datetime(row['fecha_hora_fin'])
+                    pozo = row['nombre_pozo']
+                    etapa = row['Etapa Nro']
+                    tipo = row['Tipo_FRAC']
+                    
+                    if not df_npt_gantt.empty:
+                        # Buscamos NPTs que se crucen con esta etapa
+                        npts_in = df_npt_gantt[(df_npt_gantt['fecha_inicio'] < fin) & (df_npt_gantt['fecha_fin'] > ini)].sort_values('fecha_inicio')
+                        
+                        if npts_in.empty:
+                            gantt_split.append({'nombre_pozo': pozo, 'Etapa Nro': etapa, 'Tipo_FRAC': tipo, 'fecha_hora_inicio': ini, 'fecha_hora_fin': fin})
+                        else:
+                            curr_ini = ini
+                            for _, npt in npts_in.iterrows():
+                                npt_ini = max(curr_ini, npt['fecha_inicio'])
+                                npt_fin = min(fin, npt['fecha_fin'])
+                                
+                                # Guardamos el pedazo de bombeo antes del NPT
+                                if npt_ini > curr_ini:
+                                    gantt_split.append({'nombre_pozo': pozo, 'Etapa Nro': etapa, 'Tipo_FRAC': tipo, 'fecha_hora_inicio': curr_ini, 'fecha_hora_fin': npt_ini})
+                                
+                                # Movemos el inicio al final del NPT
+                                curr_ini = max(curr_ini, npt_fin)
+                            
+                            # Guardamos el pedazo de bombeo que sobró después del último NPT
+                            if curr_ini < fin:
+                                gantt_split.append({'nombre_pozo': pozo, 'Etapa Nro': etapa, 'Tipo_FRAC': tipo, 'fecha_hora_inicio': curr_ini, 'fecha_hora_fin': fin})
+                    else:
+                        gantt_split.append({'nombre_pozo': pozo, 'Etapa Nro': etapa, 'Tipo_FRAC': tipo, 'fecha_hora_inicio': ini, 'fecha_hora_fin': fin})
+                
+                # Armamos el DataFrame final ya particionado
+                df_gantt = pd.DataFrame(gantt_split)
+                
+                # --- FORMATO Y DIBUJO ---
                 df_gantt['Inicio_str'] = df_gantt['fecha_hora_inicio'].dt.strftime('%d/%m/%Y %H:%M')
                 df_gantt['Fin_str'] = df_gantt['fecha_hora_fin'].dt.strftime('%d/%m/%Y %H:%M')
                 
