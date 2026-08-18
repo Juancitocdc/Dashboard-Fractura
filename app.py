@@ -699,12 +699,12 @@ try:
     elif seccion == "🔄 Sección 2: Continuous Pumping":
         st.title("🔄 Continuous Pumping")
         
-        # --- LÓGICA 1: CORTADOR DE GALLETAS (Pumping vs Pumping & Pumping vs NPT) ---
+        # --- LÓGICA 1: CORTADOR DE GALLETAS (Limpieza Visual y de Tiempos) ---
         def generar_fragmentos_visuales(df_raw, df_npt):
             df_cl = df_raw.dropna(subset=['fecha_hora_inicio', 'fecha_hora_fin']).copy()
             if df_cl.empty: return pd.DataFrame()
             
-            # 1. Pumping vs Pumping (Etapas cortas perforan etapas largas = Zipper Frac real)
+            # 1. Pumping vs Pumping (Saltos intermedios / Zipper Frac real)
             df_cl['duration'] = (df_cl['fecha_hora_fin'] - df_cl['fecha_hora_inicio']).dt.total_seconds()
             records = df_cl.sort_values('duration').to_dict('records')
             
@@ -720,15 +720,15 @@ try:
                     new_segments = []
                     for s_ini, s_fin in segments_of_current:
                         if f_fin <= s_ini or f_ini >= s_fin:
-                            new_segments.append((s_ini, s_fin)) # Sin solapamiento
+                            new_segments.append((s_ini, s_fin)) 
                         else:
-                            # Solapamiento: partimos la etapa larga
+                            # Parte la etapa a la mitad
                             if s_ini < f_ini: new_segments.append((s_ini, f_ini))
                             if s_fin > f_fin: new_segments.append((f_fin, s_fin))
                     segments_of_current = new_segments
                 
                 for s_ini, s_fin in segments_of_current:
-                    if (s_fin - s_ini).total_seconds() >= 60: # Descartar micro-basura < 1 min
+                    if (s_fin - s_ini).total_seconds() >= 60: 
                         seg = current.copy()
                         seg['fecha_hora_inicio'] = s_ini
                         seg['fecha_hora_fin'] = s_fin
@@ -737,7 +737,7 @@ try:
             df_frag = pd.DataFrame(final_segments)
             if df_frag.empty: return df_frag
             
-            # 2. Pumping vs NPT (NPTs perforan el bombeo creando los huecos en el Gantt)
+            # 2. Pumping vs NPT (Crea los huecos en blanco)
             if df_npt is not None and not df_npt.empty:
                 df_npt_val = df_npt.dropna(subset=['fecha_inicio', 'fecha_fin']).copy()
                 df_npt_val['fecha_inicio'] = pd.to_datetime(df_npt_val['fecha_inicio'])
@@ -773,7 +773,7 @@ try:
             
             return df_frag.sort_values('fecha_hora_inicio').reset_index(drop=True)
 
-        # --- LÓGICA 2: AUDITORÍA DE NPT EN VENTANA DE TRANSICIÓN ---
+        # --- LÓGICA 2: AUDITORÍA DE NPT EN VENTANA ---
         def has_npt_in_gap(p_end, c_start, df_npts):
             if pd.isna(p_end) or pd.isna(c_start): return False
             if df_npts is None or df_npts.empty: return False
@@ -782,14 +782,13 @@ try:
             df_n['fecha_inicio'] = pd.to_datetime(df_n['fecha_inicio'])
             df_n['fecha_fin'] = pd.to_datetime(df_n['fecha_fin'])
             
-            # Un NPT anula el CP si ocurre en el medio del gap, o si termina en el segundo exacto que arranca la etapa
             mask_overlap = (df_n['fecha_inicio'] < c_start) & (df_n['fecha_fin'] > p_end)
             mask_touch_end = (df_n['fecha_fin'] == c_start)
             return (mask_overlap | mask_touch_end).any()
 
-        # --- LÓGICA 3: MOTOR CENTRAL ---
+        # --- LÓGICA 3: MOTOR CENTRAL Y REGLA DEL CAMBIO INTERMEDIO ---
         def procesar_pad_cp(df_h9_pad, df_h2_pad):
-            # 1. Base Original de Etapas
+            # 1. Base Original (1 fila por Etapa para conteo perfecto)
             df_p = df_h9_pad.copy().sort_values('fecha_hora_inicio')
             if df_p.empty: return df_p, pd.DataFrame()
             
@@ -801,63 +800,63 @@ try:
             if 'es_cp_tecnico' not in df_p.columns:
                 df_p['es_cp_tecnico'] = False
             
-            # 2. Fragmentación visual (Cortador de galletas puro, SIN clamping que borre los retornos)
+            # 2. Cortamos los fragmentos para la línea de tiempo real
             df_frag = generar_fragmentos_visuales(df_p, df_npt)
             
             if df_frag.empty:
                 df_p['es_cp_final'] = False
                 return df_p, df_frag
-                
-            df_frag = df_frag.sort_values('fecha_hora_inicio').reset_index(drop=True)
             
-            # Buscamos los inicios y fines absolutos reales de cada etapa para la regla del cambio intermedio
             real_starts = df_frag.groupby('stage_id')['fecha_hora_inicio'].min()
             real_ends = df_frag.groupby('stage_id')['fecha_hora_fin'].max()
             
-            # 3. Lógica Estricta de Color y Validaciones
-            colores = []
+            # 3. CRONOLOGÍA ESTRICTA (Evaluación de saltos y retornos)
+            stage_status = {}
             true_prev_stage = {}
+            colores = []
             
             for i in range(len(df_frag)):
                 frag = df_frag.iloc[i]
+                stage_id = frag['stage_id']
+                is_frag_start = (frag['fecha_hora_inicio'] == real_starts[stage_id])
+                
+                base_cp = df_p.loc[df_p['stage_id'] == stage_id, 'es_cp_tecnico'].values
+                es_valido_backend = base_cp[0] if len(base_cp) > 0 else False
+                
                 if i == 0:
-                    es_tecnico = df_p.loc[df_p['stage_id'] == frag['stage_id'], 'es_cp_tecnico'].values
-                    colores.append(es_tecnico[0] if len(es_tecnico) > 0 else False)
+                    colores.append(es_valido_backend)
+                    if is_frag_start: stage_status[stage_id] = es_valido_backend
                     continue
                     
                 prev_frag = df_frag.iloc[i-1]
                 gap_mins = (frag['fecha_hora_inicio'] - prev_frag['fecha_hora_fin']).total_seconds() / 60.0
                 
-                # Regla de anulación por NPT en la brecha o Gap > 5
+                # REGLA DE ORO: ¿La etapa anterior terminó su trabajo (llegó a su final absoluto)?
+                is_prev_final = (prev_frag['fecha_hora_fin'] == real_ends[prev_frag['stage_id']])
+                
                 if gap_mins > 5 or has_npt_in_gap(prev_frag['fecha_hora_fin'], frag['fecha_hora_inicio'], df_npt):
-                    colores.append(False)
+                    # NPT o tardaron mucho -> Rojo
+                    color = False
                 else:
-                    # REGLA DE ORO (El cambio intermedio): ¿La etapa anterior terminó definitivamente?
-                    is_prev_final = (prev_frag['fecha_hora_fin'] == real_ends[prev_frag['stage_id']])
-                    
                     if not is_prev_final:
-                        # Si no era el final absoluto, es un cambio a mitad de etapa. ROJO.
-                        colores.append(False) 
+                        # Cambio intermedio! Saltar de pozo sin terminar anula el CP de la etapa nueva -> Rojo
+                        color = False
                     else:
-                        is_frag_start = (frag['fecha_hora_inicio'] == real_starts[frag['stage_id']])
-                        es_tecnico = df_p.loc[df_p['stage_id'] == frag['stage_id'], 'es_cp_tecnico'].values
-                        es_valido = es_tecnico[0] if len(es_tecnico) > 0 else False
-                        
                         if is_frag_start:
-                            # Arranque limpio
-                            colores.append(es_valido)
-                            if es_valido:
-                                true_prev_stage[frag['stage_id']] = prev_frag['stage_id']
+                            # Arranque de etapa limpia después de que la anterior cerró.
+                            color = es_valido_backend
+                            if color: true_prev_stage[stage_id] = prev_frag['stage_id']
                         else:
-                            # Es un bloque de 'Retorno' (Los famosos cuadrados violetas)
-                            # Hereda el status original de su etapa si la transición fue rápida y sin NPT
-                            colores.append(es_valido)
+                            # Es un Retorno a una etapa vieja que se había pausado. Mantiene su color.
+                            color = stage_status.get(stage_id, False)
                             
+                colores.append(color)
+                if is_frag_start: stage_status[stage_id] = color
+                
             df_frag['es_cp_final'] = colores
             
-            # 4. Actualizar Base Original
-            cp_por_etapa = df_frag[df_frag['fecha_hora_inicio'] == df_frag['stage_id'].map(real_starts)].set_index('stage_id')['es_cp_final']
-            df_p['es_cp_final'] = df_p['stage_id'].map(cp_por_etapa).fillna(False)
+            # 4. Impactar resultado en la base original
+            df_p['es_cp_final'] = df_p['stage_id'].map(stage_status).fillna(False)
             
             df_p['prev_stage_id'] = df_p['stage_id'].map(true_prev_stage)
             stage_text_map = dict(zip(df_p['stage_id'], df_p['nombre_pozo'].astype(str) + " Etapa " + df_p['nro_etapa'].astype(str)))
@@ -927,7 +926,6 @@ try:
             fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)]) 
             
             std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
-            df_npt_pad = df_pad_h2[df_pad_h2['es_npt'] == True].copy() if 'es_npt' in df_pad_h2.columns else pd.DataFrame()
             
             datos_cp = []
             acum_etapas_fin = 0
@@ -961,6 +959,7 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
+                # Horas Netas con la base pre-limpiada
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
@@ -976,7 +975,6 @@ try:
                         tiempo_bombeo_dia = df_hoy['minutos_en_ventana'].sum() / 60
                         df_cp_hoy = df_hoy[df_hoy['es_bloque_cp'] == True]
                         tiempo_total_cp_dia = df_cp_hoy['minutos_en_ventana'].sum() / 60
-                        
                         max_tiempo_cp_dia = df_cp_hoy.groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60 if not df_cp_hoy.empty else 0
                     else:
                         tiempo_bombeo_dia, tiempo_total_cp_dia, max_tiempo_cp_dia = 0, 0, 0
@@ -1132,10 +1130,9 @@ try:
                             df_bloques_hoy = df_hoy_pad[df_hoy_pad['es_bloque_cp'] == True]
                             tiempo_total_cp_pad += df_bloques_hoy['minutos_en_ventana'].sum() / 60
                             
-                            if not df_bloques_hoy.empty:
-                                max_dia = df_bloques_hoy.groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60
-                                if max_dia > max_cp_diario_pad:
-                                    max_cp_diario_pad = max_dia
+                            max_dia = df_bloques_hoy.groupby('bloque_id')['minutos_en_ventana'].sum().max() / 60 if not df_bloques_hoy.empty else 0
+                            if max_dia > max_cp_diario_pad:
+                                max_cp_diario_pad = max_dia
                 
                 resumen_cp.append({
                     "Yacimiento": yac,
