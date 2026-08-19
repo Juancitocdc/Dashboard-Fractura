@@ -655,45 +655,6 @@ try:
             st.dataframe(pd.DataFrame(resumen_macro), use_container_width=True, hide_index=True)
 
             # ==========================================
-            # CUADRO 2: RESUMEN POR YACIMIENTO
-            # ==========================================
-            st.subheader("Cuadro 2 - Resumen por Yacimiento")
-            resumen_yac_tiempos = []
-            
-            for yac in sel_yac_t2:
-                # Nos aseguramos de sumar solo los PADs que están filtrados en pantalla
-                pads_del_yac = [p for p in sel_pad_t2 if p in df_t2[df_t2['Yacimiento'] == yac]['PAD'].unique()]
-                if not pads_del_yac: continue
-                
-                df_yac = df_t2[(df_t2['Yacimiento'] == yac) & (df_t2['PAD'].isin(pads_del_yac))]
-                if df_yac.empty: continue
-                
-                std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])
-                
-                etapas_totales_yac = df_yac['cantidad etapas'].sum()
-                setup_prom_yac = df_yac['SETUPF Sin NPT min'].sum() / etapas_totales_yac if etapas_totales_yac > 0 else 0
-                ramp_prom_yac = df_yac['RAMP Sin NPT min'].sum() / etapas_totales_yac if etapas_totales_yac > 0 else 0
-                frac_prom_yac = df_yac['FRAC Sin NPT min'].sum() / etapas_totales_yac if etapas_totales_yac > 0 else 0
-                npt_total_yac = df_yac['NPT Total min'].sum()
-                npt_prom_yac = npt_total_yac / etapas_totales_yac if etapas_totales_yac > 0 else 0
-                
-                resumen_yac_tiempos.append({
-                    "Yacimiento": yac,
-                    "Cantidad Etapas": etapas_totales_yac,
-                    "Cantidad Etapas STD": std.get("Etapas_Dia_STD", 0),
-                    "Setupf Prom Yac (min)": round(setup_prom_yac, 2),
-                    "Setupf STD (min)": std.get("Setupf_STD_min", 0),
-                    "Ramp Prom Yac (min)": round(ramp_prom_yac, 2),
-                    "Ramp STD (min)": std.get("Ramp_STD_min", 0),
-                    "Frac Prom Yac (min)": round(frac_prom_yac, 2),
-                    "Frac STD (min)": std.get("Frac_STD_min", "N/A"),
-                    "NPT Total Yac (min)": round(npt_total_yac, 2),
-                    "NPT Prom Yac (min)": round(npt_prom_yac, 2)
-                })
-                
-            st.dataframe(pd.DataFrame(resumen_yac_tiempos), use_container_width=True, hide_index=True)
-
-    # ==========================================
     # DASHBOARD: SECCIÓN 2 (CONTINUOUS PUMPING)
     # ==========================================
     elif seccion == "🔄 Sección 2: Continuous Pumping":
@@ -786,9 +747,9 @@ try:
             mask_touch_end = (df_n['fecha_fin'] == c_start)
             return (mask_overlap | mask_touch_end).any()
 
-        # --- LÓGICA 3: MOTOR CENTRAL Y REGLA DEL CAMBIO INTERMEDIO ---
+        # --- LÓGICA 3: MOTOR CENTRAL (ABANDONOS Y TRENES DE BOMBEO) ---
         def procesar_pad_cp(df_h9_pad, df_h2_pad):
-            # 1. Base Original (1 fila por Etapa para conteo perfecto)
+            # 1. Base Original
             df_p = df_h9_pad.copy().sort_values('fecha_hora_inicio')
             if df_p.empty: return df_p, pd.DataFrame()
             
@@ -800,7 +761,7 @@ try:
             if 'es_cp_tecnico' not in df_p.columns:
                 df_p['es_cp_tecnico'] = False
             
-            # 2. Cortamos los fragmentos para la línea de tiempo real
+            # 2. Fragmentación
             df_frag = generar_fragmentos_visuales(df_p, df_npt)
             
             if df_frag.empty:
@@ -810,60 +771,79 @@ try:
             real_starts = df_frag.groupby('stage_id')['fecha_hora_inicio'].min()
             real_ends = df_frag.groupby('stage_id')['fecha_hora_fin'].max()
             
-            # 3. CRONOLOGÍA ESTRICTA (Evaluación de saltos, retornos y trenes de bombeo)
+            # --- NUEVA REGLA 6: DETECCIÓN DE ETAPAS ABANDONADAS ---
+            # Una etapa se considera abandonada si se detuvo antes de su final y saltamos a otro pozo.
+            abandoned_stages = set()
+            for i in range(len(df_frag) - 1):
+                curr_frag = df_frag.iloc[i]
+                next_frag = df_frag.iloc[i+1]
+                if curr_frag['fecha_hora_fin'] < real_ends[curr_frag['stage_id']]:
+                    if curr_frag['stage_id'] != next_frag['stage_id']:
+                        abandoned_stages.add(curr_frag['stage_id'])
+
+            # 3. CRONOLOGÍA ESTRICTA
             colores = []
             true_prev_stage = {}
-            breaks_physical_block = [False] # El primer fragmento inicia el tren
+            breaks_physical_block = []
+            stage_status = {}
             
             for i in range(len(df_frag)):
                 frag = df_frag.iloc[i]
                 stage_id = frag['stage_id']
+                is_frag_start = (frag['fecha_hora_inicio'] == real_starts[stage_id])
+                
+                base_cp = df_p.loc[df_p['stage_id'] == stage_id, 'es_cp_tecnico'].values
+                es_valido_backend = base_cp[0] if len(base_cp) > 0 else False
                 
                 if i == 0:
-                    base_cp = df_p.loc[df_p['stage_id'] == stage_id, 'es_cp_tecnico'].values
-                    colores.append(base_cp[0] if len(base_cp) > 0 else False)
+                    color = es_valido_backend if stage_id not in abandoned_stages else False
+                    colores.append(color)
+                    if is_frag_start: stage_status[stage_id] = color
+                    breaks_physical_block.append(False)
                     continue
                     
                 prev_frag = df_frag.iloc[i-1]
                 gap_mins = (frag['fecha_hora_inicio'] - prev_frag['fecha_hora_fin']).total_seconds() / 60.0
-                
                 has_npt = has_npt_in_gap(prev_frag['fecha_hora_fin'], frag['fecha_hora_inicio'], df_npt)
                 
                 # --- BLOQUE FÍSICO (Para sumar las horas) ---
-                # Si el gap > 5 o hay NPT, se rompe físicamente el tren de bombeo.
                 if gap_mins > 5 or has_npt:
                     breaks_physical_block.append(True)
                 else:
                     breaks_physical_block.append(False)
                 
-                # --- COLOR VISUAL Y CP LOGRADO (Las flechas rojas y verdes) ---
-                if gap_mins > 5 or has_npt:
-                    color = False # Excedió tiempo o hubo NPT en el hueco
+                # --- COLOR VISUAL Y CP LOGRADO ---
+                if stage_id in abandoned_stages:
+                    # El castigo total por abandono
+                    color = False
                 else:
                     is_same_stage = (stage_id == prev_frag['stage_id'])
                     if is_same_stage:
-                        color = colores[-1] # Mantiene su color a través del micro-corte
+                        # Si es el mismo pozo, hereda color (el NPT rompe el tiempo físico pero NO le quita el CP)
+                        color = stage_status.get(stage_id, False)
+                    elif gap_mins > 5 or has_npt:
+                        color = False
                     else:
                         is_prev_final = (prev_frag['fecha_hora_fin'] == real_ends[prev_frag['stage_id']])
                         if not is_prev_final:
-                            color = False # Cambio intermedio -> Rojo
+                            # Cambio intermedio (abandonó al anterior)
+                            color = False
                         else:
-                            color = True # Transición válida y continua -> Verde
-                            if stage_id not in true_prev_stage:
+                            color = es_valido_backend
+                            if color and is_frag_start and stage_id not in true_prev_stage:
                                 true_prev_stage[stage_id] = prev_frag['stage_id']
                                 
                 colores.append(color)
+                if is_frag_start: stage_status[stage_id] = color
                 
             df_frag['es_cp_final'] = colores
             df_frag['break_block'] = breaks_physical_block
             df_frag['bloque_id'] = df_frag['break_block'].cumsum()
             
-            # LA MAGIA DE LA LOCOMOTORA ROJA:
-            # Un "Tren de Bombeo Continuo" es cualquier bloque físico que tenga al menos UN fragmento verde.
-            # Si lo tiene, TODO el bloque (incluida la etapa roja que arrancó las bombas) se cuenta para las horas CP.
+            # El Tren de Bombeo Máximo se convalida si tiene al menos un fragmento Verde
             df_frag['es_bloque_cp'] = df_frag.groupby('bloque_id')['es_cp_final'].transform('any')
             
-            # 4. Impactar resultado en la base original (Auditoría de etapas)
+            # 4. Impactar resultado en la base original
             cp_por_etapa = df_frag.groupby('stage_id')['es_cp_final'].any()
             df_p['es_cp_final'] = df_p['stage_id'].map(cp_por_etapa).fillna(False)
             
@@ -898,11 +878,9 @@ try:
             pad_idx_c = pads_disp.index(pad_def_c) if (sel_yac_c1 == yac_def_c and pad_def_c in pads_disp) else 0
             with col_c2: sel_pad_c1 = st.selectbox("Seleccionar PAD (C1):", pads_disp, index=pad_idx_c)
             
-            # --- PREPARACIÓN DE DATOS ---
             df_pad_raw = df_h9[(df_h9['Yacimiento'] == sel_yac_c1) & (df_h9['PAD'] == sel_pad_c1)].copy()
             df_pad_h2 = df_h2[(df_h2['Yacimiento'] == sel_yac_c1) & (df_h2['PAD'] == sel_pad_c1)].copy()
             
-            # EJECUTAR MOTOR MAESTRO
             df_c1_h9, df_frag = procesar_pad_cp(df_pad_raw, df_pad_h2)
             
             if not df_c1_h9.empty:
@@ -962,7 +940,6 @@ try:
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
                 
-                # Extracción de Tiempos usando los Recuadros Verdes (Incluyendo Locomotoras Rojas)
                 inicio_ventana = pd.to_datetime(fecha) - pd.Timedelta(days=1) + pd.Timedelta(hours=6)
                 fin_ventana = pd.to_datetime(fecha) + pd.Timedelta(hours=6)
                 
