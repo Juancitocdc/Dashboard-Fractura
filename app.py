@@ -654,7 +654,7 @@ try:
                 })
             st.dataframe(pd.DataFrame(resumen_macro), use_container_width=True, hide_index=True)
 
-            # ==========================================
+    # ==========================================
     # DASHBOARD: SECCIÓN 2 (CONTINUOUS PUMPING)
     # ==========================================
     elif seccion == "🔄 Sección 2: Continuous Pumping":
@@ -747,7 +747,7 @@ try:
             mask_touch_end = (df_n['fecha_fin'] == c_start)
             return (mask_overlap | mask_touch_end).any()
 
-        # --- LÓGICA 3: MOTOR CENTRAL (ABANDONOS Y TRENES DE BOMBEO) ---
+        # --- LÓGICA 3: MOTOR CENTRAL (INDEPENDIZADO DE LA BASE CRUDA) ---
         def procesar_pad_cp(df_h9_pad, df_h2_pad):
             # 1. Base Original
             df_p = df_h9_pad.copy().sort_values('fecha_hora_inicio')
@@ -757,9 +757,6 @@ try:
             df_p = df_p.drop_duplicates(subset=['stage_id'], keep='first')
             
             df_npt = df_h2_pad[df_h2_pad['es_npt'] == True].copy() if 'es_npt' in df_h2_pad.columns else pd.DataFrame()
-            
-            if 'es_cp_tecnico' not in df_p.columns:
-                df_p['es_cp_tecnico'] = False
             
             # 2. Fragmentación
             df_frag = generar_fragmentos_visuales(df_p, df_npt)
@@ -771,8 +768,7 @@ try:
             real_starts = df_frag.groupby('stage_id')['fecha_hora_inicio'].min()
             real_ends = df_frag.groupby('stage_id')['fecha_hora_fin'].max()
             
-            # --- NUEVA REGLA 6: DETECCIÓN DE ETAPAS ABANDONADAS ---
-            # Una etapa se considera abandonada si se detuvo antes de su final y saltamos a otro pozo.
+            # 3. DETECCIÓN DE ETAPAS ABANDONADAS
             abandoned_stages = set()
             for i in range(len(df_frag) - 1):
                 curr_frag = df_frag.iloc[i]
@@ -781,7 +777,7 @@ try:
                     if curr_frag['stage_id'] != next_frag['stage_id']:
                         abandoned_stages.add(curr_frag['stage_id'])
 
-            # 3. CRONOLOGÍA ESTRICTA
+            # 4. CRONOLOGÍA ESTRICTA EN VIVO (Sin mirar la base cruda)
             colores = []
             true_prev_stage = {}
             breaks_physical_block = []
@@ -792,11 +788,8 @@ try:
                 stage_id = frag['stage_id']
                 is_frag_start = (frag['fecha_hora_inicio'] == real_starts[stage_id])
                 
-                base_cp = df_p.loc[df_p['stage_id'] == stage_id, 'es_cp_tecnico'].values
-                es_valido_backend = base_cp[0] if len(base_cp) > 0 else False
-                
                 if i == 0:
-                    color = es_valido_backend if stage_id not in abandoned_stages else False
+                    color = False # El primer bloque del pad en la historia no viene de nada, arranca rojo/gris.
                     colores.append(color)
                     if is_frag_start: stage_status[stage_id] = color
                     breaks_physical_block.append(False)
@@ -814,27 +807,29 @@ try:
                 
                 # --- COLOR VISUAL Y CP LOGRADO ---
                 if stage_id in abandoned_stages:
-                    # El castigo total por abandono
                     color = False
                 else:
                     is_same_stage = (stage_id == prev_frag['stage_id'])
                     if is_same_stage:
-                        # Si es el mismo pozo, hereda color (el NPT rompe el tiempo físico pero NO le quita el CP)
                         color = stage_status.get(stage_id, False)
                     elif gap_mins > 5 or has_npt:
                         color = False
                     else:
                         is_prev_final = (prev_frag['fecha_hora_fin'] == real_ends[prev_frag['stage_id']])
                         if not is_prev_final:
-                            # Cambio intermedio (abandonó al anterior)
                             color = False
                         else:
-                            color = es_valido_backend
-                            if color and is_frag_start and stage_id not in true_prev_stage:
-                                true_prev_stage[stage_id] = prev_frag['stage_id']
+                            if is_frag_start:
+                                # ¡MAGIA ACÁ! No le preguntamos a la base original. Si las condiciones se dan en vivo, es CP.
+                                color = True 
+                                if stage_id not in true_prev_stage:
+                                    true_prev_stage[stage_id] = prev_frag['stage_id']
+                            else:
+                                color = stage_status.get(stage_id, False)
                                 
                 colores.append(color)
-                if is_frag_start: stage_status[stage_id] = color
+                if is_frag_start and stage_id not in stage_status:
+                    stage_status[stage_id] = color
                 
             df_frag['es_cp_final'] = colores
             df_frag['break_block'] = breaks_physical_block
@@ -843,7 +838,7 @@ try:
             # El Tren de Bombeo Máximo se convalida si tiene al menos un fragmento Verde
             df_frag['es_bloque_cp'] = df_frag.groupby('bloque_id')['es_cp_final'].transform('any')
             
-            # 4. Impactar resultado en la base original
+            # 5. Impactar resultado en la base original
             cp_por_etapa = df_frag.groupby('stage_id')['es_cp_final'].any()
             df_p['es_cp_final'] = df_p['stage_id'].map(cp_por_etapa).fillna(False)
             
