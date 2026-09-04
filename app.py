@@ -18,7 +18,7 @@ import json
 # ==========================================
 st.set_page_config(page_title="Dashboard Operativo", layout="wide", initial_sidebar_state="expanded")
 
-PIN_OPERATIVO = "FRACTURA2026" # <--- CAMBIÁ EL PIN ACÁ
+PIN_OPERATIVO = "..." # <--- CAMBIÁ EL PIN ACÁ
 
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
@@ -755,6 +755,13 @@ try:
             
             df_p['stage_id'] = df_p['nombre_pozo'].astype(str) + "_" + df_p['nro_etapa'].astype(str)
             df_p = df_p.drop_duplicates(subset=['stage_id'], keep='first')
+
+            # ELEGIBILIDAD PARA CP: la primera etapa de cada pozo no puede venir de un
+            # continuo (no hay etapa previa desde la cual encadenar). Como df_p ya viene
+            # ordenado por fecha_hora_inicio, duplicated(keep='first') marca False en la
+            # primera aparicion de cada pozo y True en el resto. Reemplaza al viejo "-4"
+            # fijo: se adapta solo a PADs de 3, 4 o 6 pozos y a pozos que entran tarde.
+            df_p['es_elegible_cp'] = df_p.duplicated(subset=['nombre_pozo'], keep='first')
             
             df_npt = df_h2_pad[df_h2_pad['es_npt'] == True].copy() if 'es_npt' in df_h2_pad.columns else pd.DataFrame()
             
@@ -907,7 +914,7 @@ try:
             acum_etapas_fin = 0
             acum_cp = 0
             acum_minutos_totales = 0
-            posibles_acum_ayer = 0
+            acum_posibles = 0
             
             for fecha in fechas_pad:
                 df_dia_h9_fin = df_c1_h9[df_c1_h9['fecha_reporte'] == fecha]
@@ -922,15 +929,21 @@ try:
                 else:
                     minutos_dia = 0
                 
+                # Etapas que realmente pudieron ser CP ese dia: las que ARRANCARON ese dia
+                # y no son la primera de su pozo. Usa fecha_reporte_cp (inicio), igual que
+                # cp_dia, para que numerador y denominador queden sobre la misma fecha.
+                if 'es_elegible_cp' in df_dia_h9_inicio.columns:
+                    posibles_dia = int(df_dia_h9_inicio['es_elegible_cp'].fillna(False).sum())
+                else:
+                    posibles_dia = 0
+                
                 acum_etapas_fin += etapas_dia
                 acum_cp += cp_dia
                 acum_minutos_totales += minutos_dia
-                
-                posibles_acum_hoy = max(0, acum_etapas_fin - 4)
-                posibles_dia = posibles_acum_hoy - posibles_acum_ayer
+                acum_posibles += posibles_dia
                 
                 pct_cp_dia = (cp_dia / posibles_dia * 100) if posibles_dia > 0 else 0
-                pct_cp_pad = (acum_cp / posibles_acum_hoy * 100) if posibles_acum_hoy > 0 else 0
+                pct_cp_pad = (acum_cp / acum_posibles * 100) if acum_posibles > 0 else 0
                 
                 dias_reales = acum_minutos_totales / 1440.0
                 etapas_por_dia_real = (acum_etapas_fin / dias_reales) if dias_reales > 0 else 0
@@ -969,12 +982,10 @@ try:
                     "Tiempo de Bombeo (hr)": round(tiempo_bombeo_dia, 2),
                     "Tiempo Total de Bombeo Continuo (hr)": round(tiempo_total_cp_dia, 2),
                     "Maximo Tiempo de Bombeo Continuo Diario (hr)": round(max_tiempo_cp_dia, 2),
-                    "Etapas Posibles CP (Acum-4)": posibles_acum_hoy
+                    "Etapas Posibles CP (Acum.)": acum_posibles
                 })
                 
-                posibles_acum_ayer = posibles_acum_hoy
-                
-            columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo Diario (hr)", "Etapas Posibles CP (Acum-4)"]
+            columnas_tabla = ["Fecha Reporte", "Etapas Acum.", "Etapas Día", "CP Logrados", "% CP (Día)", "% CP (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Maximo Tiempo de Bombeo Continuo Diario (hr)", "Etapas Posibles CP (Acum.)"]
             df_cuadro1 = pd.DataFrame(datos_cp) if datos_cp else pd.DataFrame(columns=columnas_tabla)
             
             if not df_cuadro1.empty:
@@ -1073,7 +1084,12 @@ try:
                 
                 etapas_totales = len(df_pad_h9)
                 cp_totales = df_pad_h9['es_cp_final'].fillna(False).sum() if 'es_cp_final' in df_pad_h9.columns else 0
-                etapas_posibles = max(0, etapas_totales - 4)
+                # Posibles = todas menos la primera etapa de cada pozo del PAD
+                pozos_pad = df_pad_h9['nombre_pozo'].nunique()
+                if 'es_elegible_cp' in df_pad_h9.columns:
+                    etapas_posibles = int(df_pad_h9['es_elegible_cp'].fillna(False).sum())
+                else:
+                    etapas_posibles = 0
                 pct_cp_final = (cp_totales / etapas_posibles * 100) if etapas_posibles > 0 else 0
                 
                 if 'duracion_minutos' in df_pad_h2.columns:
@@ -1122,11 +1138,12 @@ try:
                     "Tiempo de Bombeo (hr)": round(tiempo_bombeo_pad, 2),
                     "Tiempo Total de Bombeo Continuo (hr)": round(tiempo_total_cp_pad, 2),
                     "Máx. Diario CP (hr)": round(max_cp_diario_pad, 2),
-                    "Posibles CP (Total - 4)": etapas_posibles,
+                    "Pozos del PAD": pozos_pad,
+                    "Posibles CP": etapas_posibles,
                     "Última Fecha": ultima_fecha
                 })
             
-            columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Máx. Diario CP (hr)", "Posibles CP (Total - 4)", "Última Fecha"]
+            columnas_cuadro1 = ["Yacimiento", "PAD", "Etapas Acum.", "Total CP Logrados", "% CP Final (PAD)", "Etapas STD", "Etapas/Día (Real)", "Tiempo de Bombeo (hr)", "Tiempo Total de Bombeo Continuo (hr)", "Máx. Diario CP (hr)", "Pozos del PAD", "Posibles CP", "Última Fecha"]
             st.dataframe(pd.DataFrame(resumen_cp) if resumen_cp else pd.DataFrame(columns=columnas_cuadro1), use_container_width=True, hide_index=True)
             
             st.subheader("Cuadro 2 - Resumen por Yacimiento")
@@ -1156,7 +1173,7 @@ try:
                             
                         etapas_totales_yac += pad_data["Etapas Acum."]
                         cp_totales_yac += pad_data["Total CP Logrados"]
-                        posibles_yac += pad_data["Posibles CP (Total - 4)"]
+                        posibles_yac += pad_data["Posibles CP"]
                         
                         df_pad_h2 = df_h2[df_h2['PAD'] == pad_data["PAD"]].copy()
                         if 'duracion_minutos' in df_pad_h2.columns:
