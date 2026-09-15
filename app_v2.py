@@ -786,10 +786,11 @@ def estilo_fig(fig, alto=300, leyenda=True, hover="x unified"):
                         font=dict(family=FUENTE, size=12, color=t["text"])),
         bargap=0.35,
     )
+    # automargin: Plotly agranda el margen solo para que las etiquetas de los ejes no se corten
     fig.update_xaxes(showgrid=False, zeroline=False, showline=True, linecolor=t["axis"], linewidth=1,
-                     tickfont=dict(color=t["muted"], size=11), title_text="")
+                     tickfont=dict(color=t["muted"], size=11), title_text="", automargin=True)
     fig.update_yaxes(showgrid=True, gridcolor=t["grid"], gridwidth=1, zeroline=False, showline=False,
-                     tickfont=dict(color=t["muted"], size=11), title_text="")
+                     tickfont=dict(color=t["muted"], size=11), title_text="", automargin=True)
     try:
         fig.update_layout(barcornerradius=4)
     except Exception:
@@ -805,8 +806,9 @@ def linea_std(fig, y, texto, fila=None, col=None):
     # Línea horizontal de referencia (STD) con etiqueta, sin gridlines extra
     kw = dict(row=fila, col=col) if fila else {}
     fig.add_hline(y=y, line=dict(color=TEMA["text2"], width=1.5), opacity=0.9,
-                  annotation_text=texto, annotation_position="top right",
-                  annotation_font=dict(size=11, color=TEMA["text2"]), **kw)
+                  annotation=dict(text=texto, font=dict(size=11, color=TEMA["text2"]),
+                                  bgcolor=TEMA["surface"], bordercolor=TEMA["border_strong"], borderwidth=1, borderpad=3),
+                  annotation_position="top right", **kw)
 
 
 def a_fecha(serie_texto):
