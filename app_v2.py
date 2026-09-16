@@ -189,7 +189,22 @@ def descargar_y_procesar(url_tiempos, url_continuo):
 
     # --- CREACIÓN DE VARIABLES DE TRANSICIÓN ---
     df_continuo['pozo_etapa_actual'] = df_continuo['nombre_pozo'].astype(str) + " Etapa " + df_continuo['nro_etapa'].astype(str)
-    df_continuo['pozo_etapa_anterior'] = df_continuo['pozo_etapa_actual'].shift(1).fillna('Inicio Operaciones')
+
+    # Etapa anterior = la que arrancó antes y cuyo fin es el último dentro de (inicio + tolerancia).
+    # No es la fila de arriba: si se salió de un pozo y se volvió a entrar, la anterior es la que terminó justo antes.
+    _inicios = df_continuo['fecha_hora_inicio'].values
+    _fines = df_continuo['fecha_hora_fin'].values
+    _tol = np.timedelta64(int(TOLERANCIA_CP_MIN * 60), 's')
+    _idx_anterior = np.full(len(df_continuo), -1)
+    for _i in range(len(df_continuo)):
+        if pd.isna(_inicios[_i]):
+            continue
+        _cand = np.where((_inicios < _inicios[_i]) & (_fines <= _inicios[_i] + _tol))[0]
+        if len(_cand):
+            _idx_anterior[_i] = _cand[np.argmax(_fines[_cand])]
+    _tiene_anterior = _idx_anterior >= 0
+    _ant = df_continuo.iloc[np.where(_tiene_anterior, _idx_anterior, 0)]
+    df_continuo['pozo_etapa_anterior'] = np.where(_tiene_anterior, _ant['pozo_etapa_actual'].values, 'Inicio Operaciones')
     df_continuo['transicion_cp'] = np.where(df_continuo['es_cp'], df_continuo['pozo_etapa_anterior'] + " -> " + df_continuo['pozo_etapa_actual'], "")
 
     # --- INICIO NUEVA LÓGICA DE CP (CON PRESIONES) ---
@@ -199,13 +214,13 @@ def descargar_y_procesar(url_tiempos, url_continuo):
     if 'isip_post_frac [psi]' not in df_continuo.columns:
         df_continuo['isip_post_frac [psi]'] = np.nan
 
-    # 2. Calcula la diferencia de tiempo
-    df_continuo['fecha_hora_fin_anterior'] = df_continuo['fecha_hora_fin'].shift(1)
+    # 2. Calcula la diferencia de tiempo contra la etapa anterior (la que terminó justo antes)
+    df_continuo['fecha_hora_fin_anterior'] = pd.to_datetime(np.where(_tiene_anterior, _ant['fecha_hora_fin'].values, np.datetime64('NaT')))
     df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] = (df_continuo['fecha_hora_inicio'] - df_continuo['fecha_hora_fin_anterior']).dt.total_seconds() / 60
 
-    # 3. Traemos las presiones de la etapa ANTERIOR (la que acaba de terminar)
-    df_continuo['presion_3m_anterior'] = df_continuo['presion_final_3m [psi]'].shift(1)
-    df_continuo['isip_anterior'] = df_continuo['isip_post_frac [psi]'].shift(1)
+    # 3. Traemos las presiones de esa etapa anterior
+    df_continuo['presion_3m_anterior'] = np.where(_tiene_anterior, _ant['presion_final_3m [psi]'].values, np.nan)
+    df_continuo['isip_anterior'] = np.where(_tiene_anterior, _ant['isip_post_frac [psi]'].values, np.nan)
 
     # 4. Limpiamos las presiones para ver si realmente están vacías
     no_hay_p3m = pd.to_numeric(df_continuo['presion_3m_anterior'], errors='coerce').fillna(0) <= PRESION_MINIMA_PSI
@@ -1346,13 +1361,10 @@ try:
                         abandoned_stages.add(curr_frag['stage_id'])
 
             # 4. CRONOLOGÍA ESTRICTA EN VIVO (Sin mirar la base cruda)
-            # Para el veredicto de CP se usa la misma definicion que la hoja 9: la etapa anterior es la
-            # que arranco justo antes (por orden de inicio), se miden las horas originales (sin recortar),
-            # la ventana es +-TOLERANCIA_CP_MIN y la etapa anterior no puede tener P3m ni ISIP cargados.
+            # Horas originales (sin recortar) y presiones por etapa, para aplicar la misma regla que la hoja 9:
+            # ventana de +-TOLERANCIA_CP_MIN contra el fin real de la anterior y sin P3m/ISIP cargados en ella.
             inicio_real = df_p.set_index('stage_id')['fecha_hora_inicio']
             fin_real = df_p.set_index('stage_id')['fecha_hora_fin']
-            orden_inicio = df_p.sort_values('fecha_hora_inicio')['stage_id']
-            anterior_por_inicio = dict(zip(orden_inicio, orden_inicio.shift(1)))
             p3m_etapa = pd.to_numeric(df_p.set_index('stage_id').get('presion_final_3m [psi]'), errors='coerce').fillna(0)
             isip_etapa = pd.to_numeric(df_p.set_index('stage_id').get('isip_post_frac [psi]'), errors='coerce').fillna(0)
             sin_presion = (p3m_etapa <= PRESION_MINIMA_PSI) & (isip_etapa <= PRESION_MINIMA_PSI)
@@ -1399,8 +1411,8 @@ try:
                         else:
                             prev_id = prev_frag['stage_id']
                             gap_real = (inicio_real[stage_id] - fin_real[prev_id]).total_seconds() / 60.0
-                            es_la_anterior = (anterior_por_inicio.get(stage_id) == prev_id)
-                            if is_frag_start and es_la_anterior and -TOLERANCIA_CP_MIN <= gap_real <= TOLERANCIA_CP_MIN and bool(sin_presion.get(prev_id, True)):
+                            if is_frag_start and -TOLERANCIA_CP_MIN <= gap_real <= TOLERANCIA_CP_MIN and bool(sin_presion.get(prev_id, True)):
+                                # Es CP: la etapa nueva arrancó dentro de la tolerancia del fin real de la anterior y la anterior no tiene presiones cargadas
                                 color = True
                                 if stage_id not in true_prev_stage:
                                     true_prev_stage[stage_id] = prev_frag['stage_id']
