@@ -206,7 +206,7 @@ def descargar_y_procesar(url_tiempos, url_continuo):
     no_hay_isip = pd.to_numeric(df_continuo['isip_anterior'], errors='coerce').fillna(0) == 0
 
     # 5. Lógica dura combinada: Tiempo <= 5 min Y NO hay P3m Y NO hay ISIP
-    condicion_tiempo = df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].notna() & (df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'] <= 5)
+    condicion_tiempo = df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].between(-5, 5)
     df_continuo['es_cp_tecnico'] = condicion_tiempo & no_hay_p3m & no_hay_isip
     
     # 6. Auditoría: Compara la marca manual de la operadora vs la realidad técnica
@@ -1340,6 +1340,9 @@ try:
                         abandoned_stages.add(curr_frag['stage_id'])
 
             # 4. CRONOLOGÍA ESTRICTA EN VIVO (Sin mirar la base cruda)
+            # Horas originales (sin recortar) de cada etapa, para medir el solapamiento real con la anterior
+            inicio_real = df_p.set_index('stage_id')['fecha_hora_inicio']
+            fin_real = df_p.set_index('stage_id')['fecha_hora_fin']
             colores = []
             true_prev_stage = {}
             breaks_physical_block = []
@@ -1381,13 +1384,14 @@ try:
                         if not is_prev_final:
                             color = False
                         else:
-                            if is_frag_start:
-                                # ¡MAGIA ACÁ! No le preguntamos a la base original. Si las condiciones se dan en vivo, es CP.
+                            gap_real = (inicio_real[stage_id] - fin_real[prev_frag['stage_id']]).total_seconds() / 60.0
+                            if is_frag_start and -5 <= gap_real <= 5:
+                                # Es CP solo si la etapa nueva arrancó entre 5 min antes y 5 min después del fin real de la anterior
                                 color = True
                                 if stage_id not in true_prev_stage:
                                     true_prev_stage[stage_id] = prev_frag['stage_id']
                             else:
-                                color = stage_status.get(stage_id, False)
+                                color = False if is_frag_start else stage_status.get(stage_id, False)
 
                 colores.append(color)
                 if is_frag_start and stage_id not in stage_status:
