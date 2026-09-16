@@ -36,6 +36,12 @@ PARAMETROS_STD = {
     "Default": {"Etapas_Dia_STD": 7.0, "Setupf_STD_min": 15.0, "Ramp_STD_min": 10.0, "Frac_STD_min": 120.0}
 }
 
+# Tolerancia para considerar bombeo continuo: la etapa nueva tiene que arrancar entre
+# TOLERANCIA_CP_MIN antes y TOLERANCIA_CP_MIN después del fin de la etapa anterior.
+TOLERANCIA_CP_MIN = 5
+# Presiones (P3m / ISIP) menores o iguales a este valor se toman como "no cargadas" al evaluar el CP.
+PRESION_MINIMA_PSI = 0
+
 URL_TIEMPOS = "https://docs.google.com/spreadsheets/d/171LD-isnq1p9M9_H8sPSZIG8_s9El2WC/export?format=xlsx"
 URL_CONTINUO = "https://docs.google.com/spreadsheets/d/1XHPj3S5RW8KRT4IquPREb5Cng3QtEU3C/export?format=xlsx"
 
@@ -202,11 +208,11 @@ def descargar_y_procesar(url_tiempos, url_continuo):
     df_continuo['isip_anterior'] = df_continuo['isip_post_frac [psi]'].shift(1)
 
     # 4. Limpiamos las presiones para ver si realmente están vacías
-    no_hay_p3m = pd.to_numeric(df_continuo['presion_3m_anterior'], errors='coerce').fillna(0) == 0
-    no_hay_isip = pd.to_numeric(df_continuo['isip_anterior'], errors='coerce').fillna(0) == 0
+    no_hay_p3m = pd.to_numeric(df_continuo['presion_3m_anterior'], errors='coerce').fillna(0) <= PRESION_MINIMA_PSI
+    no_hay_isip = pd.to_numeric(df_continuo['isip_anterior'], errors='coerce').fillna(0) <= PRESION_MINIMA_PSI
 
     # 5. Lógica dura combinada: Tiempo <= 5 min Y NO hay P3m Y NO hay ISIP
-    condicion_tiempo = df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].between(-5, 5)
+    condicion_tiempo = df_continuo['Tiempo_entre_fin_e_inicio_de_nueva_fractura'].between(-TOLERANCIA_CP_MIN, TOLERANCIA_CP_MIN)
     df_continuo['es_cp_tecnico'] = condicion_tiempo & no_hay_p3m & no_hay_isip
     
     # 6. Auditoría: Compara la marca manual de la operadora vs la realidad técnica
@@ -1340,9 +1346,16 @@ try:
                         abandoned_stages.add(curr_frag['stage_id'])
 
             # 4. CRONOLOGÍA ESTRICTA EN VIVO (Sin mirar la base cruda)
-            # Horas originales (sin recortar) de cada etapa, para medir el solapamiento real con la anterior
+            # Para el veredicto de CP se usa la misma definicion que la hoja 9: la etapa anterior es la
+            # que arranco justo antes (por orden de inicio), se miden las horas originales (sin recortar),
+            # la ventana es +-TOLERANCIA_CP_MIN y la etapa anterior no puede tener P3m ni ISIP cargados.
             inicio_real = df_p.set_index('stage_id')['fecha_hora_inicio']
             fin_real = df_p.set_index('stage_id')['fecha_hora_fin']
+            orden_inicio = df_p.sort_values('fecha_hora_inicio')['stage_id']
+            anterior_por_inicio = dict(zip(orden_inicio, orden_inicio.shift(1)))
+            p3m_etapa = pd.to_numeric(df_p.set_index('stage_id').get('presion_final_3m [psi]'), errors='coerce').fillna(0)
+            isip_etapa = pd.to_numeric(df_p.set_index('stage_id').get('isip_post_frac [psi]'), errors='coerce').fillna(0)
+            sin_presion = (p3m_etapa <= PRESION_MINIMA_PSI) & (isip_etapa <= PRESION_MINIMA_PSI)
             colores = []
             true_prev_stage = {}
             breaks_physical_block = []
@@ -1384,9 +1397,10 @@ try:
                         if not is_prev_final:
                             color = False
                         else:
-                            gap_real = (inicio_real[stage_id] - fin_real[prev_frag['stage_id']]).total_seconds() / 60.0
-                            if is_frag_start and -5 <= gap_real <= 5:
-                                # Es CP solo si la etapa nueva arrancó entre 5 min antes y 5 min después del fin real de la anterior
+                            prev_id = prev_frag['stage_id']
+                            gap_real = (inicio_real[stage_id] - fin_real[prev_id]).total_seconds() / 60.0
+                            es_la_anterior = (anterior_por_inicio.get(stage_id) == prev_id)
+                            if is_frag_start and es_la_anterior and -TOLERANCIA_CP_MIN <= gap_real <= TOLERANCIA_CP_MIN and bool(sin_presion.get(prev_id, True)):
                                 color = True
                                 if stage_id not in true_prev_stage:
                                     true_prev_stage[stage_id] = prev_frag['stage_id']
