@@ -1201,6 +1201,8 @@ def resumen_diario_taco(etapas):
         presion_prom=("presion_prom_psi", "mean"),
         arena_sacos=("arena_sacos", "sum"),
         agua_m3=("agua_m3", "sum"),
+        arena_prom=("arena_sacos", "mean"),   # sacos promedio por etapa del día
+        agua_prom=("agua_m3", "mean"),        # m³ promedio por etapa del día
     )
     g = g.sort_values(["pad", "dia_pad"])
     g["etapas_acum"] = g.groupby("pad")["etapas"].cumsum()
@@ -2474,7 +2476,9 @@ try:
                         dict(label="Presión prom.", value=fmt_miles(df_sel["presion_prom_psi"].mean()), unit="psi",
                              hint=f"máx {fmt_miles(df_sel['presion_max_psi'].max())} psi", color=TEMA["presion"]),
                         dict(label="Arena", value=fmt_miles(df_sel["arena_sacos"].sum()), unit="sacos",
-                             hint=f"{fmt_miles(df_sel['arena_sacos'].mean())} sacos por etapa", color=TEMA["ramp"]),
+                             hint=f"{fmt_miles(df_sel['arena_sacos'].mean())} sacos por etapa · "
+                                  + (f"{df_sel['arena_sacos'].sum() / df_sel['arena_diseno_sacos'].sum() * 100:.0f}% del diseño" if df_sel["arena_diseno_sacos"].sum() > 0 else "sin diseño"),
+                             color=TEMA["ramp"]),
                         dict(label="Agua bombeada", value=fmt_miles(df_sel["agua_m3"].sum()), unit="m³",
                              hint=f"{fmt_miles(df_sel['agua_m3'].mean())} m³ por etapa", color=TEMA["agua"]),
                         dict(label="Última etapa", value=f"{ult_k['pozo']} · {int(ult_k['etapa'])}", chico=True,
@@ -2499,10 +2503,12 @@ try:
                     det["Fin"] = det["fin"].dt.strftime("%d/%m %H:%M")
                     det["Presión"] = [f"{fmt_miles(p)} <span style='color:var(--muted)'>({fmt_miles(mn)}–{fmt_miles(mx)})</span>" for p, mn, mx in zip(det["presion_prom_psi"], det["presion_min_psi"], det["presion_max_psi"])]
                     det["Arena"] = [fmt_miles(v) for v in det["arena_sacos"]]
+                    pct_dis = det["arena_sacos"] / det["arena_diseno_sacos"].replace(0, np.nan) * 100
+                    det["% diseño"] = [f"{v:.0f}%" if pd.notna(v) else "–" for v in pct_dis]
                     det["Agua"] = [fmt_miles(v) for v in det["agua_m3"]]
                     tabla(det, columnas=[("Día", "Día", "num"), ("pozo", "Pozo", "txt"), ("etapa", "Etapa", "num"), ("Inicio", "Inicio", "txt"), ("Fin", "Fin", "txt"),
                                          ("tiempo_bombeo_hr", "Bombeo (hr)", "num"), ("caudal_bpm", "Caudal (bpm)", "num"), ("Presión", "Presión prom (mín–máx) psi", "raw"),
-                                         ("Arena", "Arena (sacos)", "raw"), ("Agua", "Agua (m³)", "raw"), ("conc_fin_ppa", "Conc. final (ppa)", "num")],
+                                         ("Arena", "Arena (sacos)", "raw"), ("% diseño", "% vs diseño", "pct"), ("Agua", "Agua (m³)", "raw"), ("conc_fin_ppa", "Conc. final (ppa)", "num")],
                           alto_max=440, compacta=True)
                 else:
                     tabla(pd.DataFrame(), [])
@@ -2545,8 +2551,8 @@ try:
                 metricas_g = [
                     ("Caudal por día", "promedio del caudal de las etapas del día (bpm)", "caudal_prom", "bpm", TEMA["setupf"], 1),
                     ("Presión por día", "promedio de la presión promedio de las etapas del día (psi)", "presion_prom", "psi", TEMA["presion"], 0),
-                    ("Arena por día", "sacos bombeados en el día", "arena_sacos", "sacos", TEMA["ramp"], 0),
-                    ("Agua por día", "m³ bombeados en el día", "agua_m3", "m³", TEMA["agua"], 0),
+                    ("Arena por día", "promedio de sacos por etapa de las etapas del día", "arena_prom", "sacos", TEMA["ramp"], 0),
+                    ("Agua por día", "promedio de m³ por etapa de las etapas del día", "agua_prom", "m³", TEMA["agua"], 0),
                     ("Etapas acumuladas", "etapas completadas acumuladas vs día del PAD", "etapas_acum", "etapas", TEMA["cp"], 0),
                 ]
                 if diario_g.empty:
