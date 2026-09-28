@@ -28,7 +28,7 @@ st.set_page_config(page_title="Dashboard Operativo", page_icon="⏱️", layout=
 PIN_OPERATIVO = "FRACTURA2026" # <--- CAMBIÁ EL PIN ACÁ
 
 # ==========================================
-# PARÁMETROS STD Y URLs
+# PARÁMETROS STD Y URLs  (PARAMETROS_STD es la tabla interna de respaldo; los STD por budget salen de URL_STD)
 # ==========================================
 PARAMETROS_STD = {
     "FORTIN DE PIEDRA": {"Etapas_Dia_STD": 7.6, "Setupf_STD_min": 21.0, "Ramp_STD_min": 8.0, "Frac_STD_min": 122.0},
@@ -44,6 +44,13 @@ PRESION_MINIMA_PSI = 0
 
 URL_TIEMPOS = "https://docs.google.com/spreadsheets/d/171LD-isnq1p9M9_H8sPSZIG8_s9El2WC/export?format=xlsx"
 URL_CONTINUO = "https://docs.google.com/spreadsheets/d/1XHPj3S5RW8KRT4IquPREb5Cng3QtEU3C/export?format=xlsx"
+# Planilla de STD por yacimiento y budget (una fila por yacimiento y budget, con fecha_desde / fecha_hasta).
+# Si queda vacía o no se puede leer, se usa PARAMETROS_STD.
+URL_STD = "https://docs.google.com/spreadsheets/d/1hDDHnttfghziPUzRD-8FV-L1ceTfLWXt/export?format=xlsx"  # planilla STD_por_budget.xlsx en Drive
+# Sección Taco: los tres archivos de fractura por etapa (mismo formato de link que los anteriores)
+URL_BOMBAS = "https://docs.google.com/spreadsheets/d/1Eva-VqvMvzA7Jxs_4v6c7MPBdOjsDhJ3/export?format=xlsx"  # Fractura Bombas.xlsx
+URL_TACO = "https://docs.google.com/spreadsheets/d/1FQgtC04rlmNScGJ6cCwfKnY2YcUnw0_Q/export?format=xlsx"    # Fractura TACO.xlsx (volumen bombeado por etapa)
+URL_VIEJOS = "https://docs.google.com/spreadsheets/d/1eKS1hmicO0CQ82MS9o7zHtJA4owFnuVd/export?format=xlsx"  # Fracturas PAD Viejos.xlsx
 
 # ==========================================
 # MOTOR DE DESCARGA Y PROCESAMIENTO APB
@@ -406,6 +413,7 @@ TEMAS = {
         grid="rgba(255,255,255,0.07)", axis="rgba(255,255,255,0.18)",
         setupf="#3987e5", ramp="#d95926", frac="#199e70", otros="#9085e9",
         cp="#0ca30c", sin_cp="#d03b3b", etapas="#55708f",
+        presion="#e66767", agua="#38bdf8", pill_off="#3a4453",
     ),
     "claro": dict(
         base="light",
@@ -419,6 +427,7 @@ TEMAS = {
         grid="#e1e0d9", axis="#c3c2b7",
         setupf="#2a78d6", ramp="#eb6834", frac="#1baf7a", otros="#4a3aa7",
         cp="#0ca30c", sin_cp="#d03b3b", etapas="#8fa3b8",
+        presion="#e34948", agua="#0284c7", pill_off="#d5dbe3",
     ),
 }
 
@@ -562,6 +571,7 @@ CSS = Template("""
 .kpi::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background: var(--kpi-accent, var(--accent)); }
 .kpi-label { font-size: 11.5px; color: var(--text2); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .kpi-value { font-size: 27px; font-weight: 700; color: var(--text); margin-top: 6px; line-height:1.1; letter-spacing:-0.01em; }
+.kpi-value.chico { font-size: 19px; margin-top: 9px; }
 .kpi-unit { font-size: 13px; color: var(--muted); font-weight: 500; margin-left: 3px; }
 .kpi-delta { margin-top: 8px; font-size: 12px; font-weight: 600; display:inline-flex; gap:4px; align-items:center; padding: 2px 8px; border-radius: 999px; }
 .kpi-delta.good { color: var(--good-text); background: var(--good-soft); }
@@ -681,7 +691,7 @@ def kpis(tarjetas):
     for t in tarjetas:
         color = t.get("color") or TEMA["accent"]
         h = f'<div class="kpi" style="--kpi-accent:{color}"><div class="kpi-label">{esc(t["label"])}</div>'
-        h += f'<div class="kpi-value">{esc(t["value"])}'
+        h += f'<div class="kpi-value{" chico" if t.get("chico") else ""}">{esc(t["value"])}'
         if t.get("unit"):
             h += f'<span class="kpi-unit">{esc(t["unit"])}</span>'
         h += "</div>"
@@ -871,6 +881,347 @@ if not st.session_state["acceso_concedido"]:
 
 
 # ==========================================
+# STD POR YACIMIENTO Y BUDGET
+# ==========================================
+# La planilla de STD (URL_STD) tiene una fila por yacimiento y budget, con el rango de fechas en que
+# rige ese budget y los cuatro valores STD. Para cada PAD se usa el budget vigente el día en que
+# arrancó el PAD. Si la planilla no está configurada o no se puede leer, se usa PARAMETROS_STD.
+COLUMNAS_STD = ["Etapas_Dia_STD", "Setupf_STD_min", "Ramp_STD_min", "Frac_STD_min"]
+
+# nombres alternativos que se aceptan en la planilla (todo se compara en minúsculas y sin espacios)
+ALIAS_COLUMNAS_STD = {
+    "desde": "fecha_desde", "fecha_inicio": "fecha_desde", "inicio": "fecha_desde",
+    "hasta": "fecha_hasta", "fecha_fin": "fecha_hasta", "fin": "fecha_hasta",
+    "etapas_dia": "etapas_dia_std", "etapas/dia": "etapas_dia_std", "etapas_por_dia": "etapas_dia_std",
+    "setupf_std": "setupf_std_min", "setupf": "setupf_std_min",
+    "ramp_std": "ramp_std_min", "ramp": "ramp_std_min",
+    "frac_std": "frac_std_min", "frac": "frac_std_min",
+    "presupuesto": "budget", "nombre_budget": "budget",
+}
+
+
+def _a_fecha(serie):
+    # Acepta celdas de fecha reales, texto "aaaa-mm-dd" o texto "dd/mm/aaaa"
+    iso = pd.to_datetime(serie, errors="coerce", format="%Y-%m-%d")
+    dmy = pd.to_datetime(serie, errors="coerce", dayfirst=True)
+    return iso.fillna(dmy).dt.normalize()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def descargar_tabla_std(url_std):
+    """Baja y ordena la planilla de STD. Devuelve (tabla, mensaje_de_estado); tabla es None si no se pudo usar."""
+    if not url_std:
+        return None, "tabla interna (sin planilla configurada)"
+    try:
+        credenciales_dict = json.loads(st.secrets["gcp_json"])
+        credentials = service_account.Credentials.from_service_account_info(
+            credenciales_dict,
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
+        )
+        credentials.refresh(google.auth.transport.requests.Request())
+        resp = requests.get(url_std, headers={"Authorization": f"Bearer {credentials.token}"})
+        if resp.status_code != 200:
+            return None, f"tabla interna (la planilla de STD devolvió error {resp.status_code})"
+        hojas = pd.read_excel(io.BytesIO(resp.content), sheet_name=None)
+        nombre_hoja = next((h for h in hojas if str(h).strip().upper() == "STD"), list(hojas)[0])
+        tabla = hojas[nombre_hoja].dropna(how="all")
+    except Exception as e:
+        return None, f"tabla interna (no se pudo leer la planilla de STD: {e})"
+
+    tabla.columns = [ALIAS_COLUMNAS_STD.get(c, c) for c in
+                     (str(c).strip().lower().replace(" ", "_") for c in tabla.columns)]
+    requeridas = ["yacimiento"] + [c.lower() for c in COLUMNAS_STD]
+    faltan = [c for c in requeridas if c not in tabla.columns]
+    if faltan:
+        return None, f"tabla interna (a la planilla de STD le faltan columnas: {', '.join(faltan)})"
+
+    tabla["yacimiento"] = tabla["yacimiento"].astype(str).str.strip().str.upper()
+    if "budget" not in tabla.columns:
+        tabla["budget"] = "Budget"
+    tabla["budget"] = tabla["budget"].fillna("Budget").astype(str).str.strip()
+    for col in ["fecha_desde", "fecha_hasta"]:
+        if col not in tabla.columns:
+            tabla[col] = pd.NaT
+        tabla[col] = _a_fecha(tabla[col])
+    for col in COLUMNAS_STD:
+        tabla[col.lower()] = pd.to_numeric(tabla[col.lower()], errors="coerce")
+    tabla = tabla[tabla["yacimiento"].ne("") & tabla["yacimiento"].ne("NAN")].reset_index(drop=True)
+    return tabla, f"planilla de budgets ({len(tabla)} filas, {tabla['budget'].nunique()} budgets)"
+
+
+def resolver_std(tabla, yacimiento, fecha):
+    """
+    STD que aplica a un yacimiento en una fecha dada.
+    Devuelve un dict con los cuatro STD más 'budget', 'desde', 'hasta' y 'origen' ('planilla' o 'codigo').
+    """
+    yac = str(yacimiento).strip().upper()
+    base = PARAMETROS_STD.get(yacimiento) or PARAMETROS_STD.get(yac) or PARAMETROS_STD["Default"]
+    resultado = dict(base, budget="tabla interna", desde=None, hasta=None, origen="codigo", faltantes=[])
+    if tabla is None or tabla.empty or fecha is None or pd.isna(fecha):
+        return resultado
+
+    f = pd.Timestamp(fecha).normalize()
+    filas = tabla[tabla["yacimiento"] == yac]
+    filas = filas[(filas["fecha_desde"].isna() | (filas["fecha_desde"] <= f)) &
+                  (filas["fecha_hasta"].isna() | (filas["fecha_hasta"] >= f))]
+    if filas.empty:
+        return resultado
+
+    # si dos budgets se superponen, gana el que empieza más tarde
+    fila = filas.sort_values("fecha_desde", na_position="first").iloc[-1]
+    faltantes = []
+    for col in COLUMNAS_STD:
+        if pd.notna(fila[col.lower()]):
+            resultado[col] = float(fila[col.lower()])
+        else:
+            faltantes.append(col)   # ese valor queda con el de la tabla interna
+    resultado.update(budget=fila["budget"], desde=fila["fecha_desde"], hasta=fila["fecha_hasta"], origen="planilla", faltantes=faltantes)
+    return resultado
+
+
+def texto_vigencia(std):
+    desde = std["desde"].strftime("%d/%m/%Y") if std.get("desde") is not None and pd.notna(std.get("desde")) else "…"
+    hasta = std["hasta"].strftime("%d/%m/%Y") if std.get("hasta") is not None and pd.notna(std.get("hasta")) else "…"
+    return f"{desde} – {hasta}"
+
+
+def linea_budget(std, referencia=""):
+    # Muestra qué budget y qué STD se están usando para el PAD seleccionado
+    if std.get("origen") == "planilla":
+        chips = [chip("Budget", std["budget"], "accent"), chip("Vigencia", texto_vigencia(std))]
+    else:
+        chips = [chip("STD de la tabla interna del código", tipo="")]
+    if referencia:
+        chips.append(chip(referencia))
+    if std.get("faltantes"):
+        nombres = {"Etapas_Dia_STD": "etapas/día", "Setupf_STD_min": "Setupf", "Ramp_STD_min": "Ramp", "Frac_STD_min": "Frac"}
+        chips.append(chip("Sin cargar en la planilla (usa tabla interna): " + ", ".join(nombres[c] for c in std["faltantes"])))
+    chips += [chip("Etapas/día", fmt_num(std["Etapas_Dia_STD"])),
+              chip("Setupf", f"{fmt_num(std['Setupf_STD_min'])} min"),
+              chip("Ramp", f"{fmt_num(std['Ramp_STD_min'])} min"),
+              chip("Frac", f"{fmt_num(std['Frac_STD_min'])} min")]
+    html_out('<div class="chips" style="margin:2px 0 12px">' + "".join(chips) + "</div>")
+
+
+# ==========================================
+# TACO: DATOS DE FRACTURA POR ETAPA (BOMBAS + VOLUMEN + PADS VIEJOS)
+# ==========================================
+# Tres archivos de Drive:
+#   URL_BOMBAS : una fila por etapa y malla de arena (caudal, presiones, arena real/diseño) de los PADs actuales
+#   URL_TACO   : una fila por etapa con el volumen bombeado [m³] de los PADs actuales
+#   URL_VIEJOS : hoja "Datos Fracturas" (una fila por etapa, con volumen) + una hoja "Arena <PAD>" por PAD
+# Se unifican en dos tablas: `etapas` (una fila por etapa) y `arena` (una fila por etapa y malla).
+LB_POR_SACO = 100  # la arena se muestra en sacos de 100 lb
+
+
+def _sin_acentos(texto):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", str(texto)) if unicodedata.category(c) != "Mn")
+
+
+def _normalizar_yacimiento(serie):
+    return serie.astype(str).map(_sin_acentos).str.strip().str.upper()
+
+
+def _dia_operativo(fechas):
+    # Día operativo de 06:00 a 06:00: lo que termina antes de las 06:00 pertenece al día anterior
+    return (pd.to_datetime(fechas) - pd.Timedelta(hours=6, seconds=1) + pd.Timedelta(days=1)).dt.normalize()
+
+
+def _horas(serie):
+    # tiempo_bombeo viene en horas en un archivo y en minutos en otro: si la mediana es grande, son minutos
+    v = pd.to_numeric(serie, errors="coerce")
+    return v / 60.0 if v.median() > 20 else v
+
+
+def _bajar_excel(url, headers):
+    resp = requests.get(url, headers=headers)
+    if resp.status_code != 200:
+        raise RuntimeError(f"error {resp.status_code} al bajar {url[:60]}...")
+    return io.BytesIO(resp.content)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def descargar_taco(url_bombas, url_taco, url_viejos):
+    """Devuelve (etapas, arena, mensaje). Si no hay links configurados o falla la descarga, etapas es None."""
+    if not (url_bombas and url_taco):
+        return None, None, "faltan configurar los links de Bombas y TACO"
+    try:
+        credenciales_dict = json.loads(st.secrets["gcp_json"])
+        credentials = service_account.Credentials.from_service_account_info(
+            credenciales_dict,
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
+        )
+        credentials.refresh(google.auth.transport.requests.Request())
+        headers = {"Authorization": f"Bearer {credentials.token}"}
+        df_bombas = pd.read_excel(_bajar_excel(url_bombas, headers))
+        df_taco = pd.read_excel(_bajar_excel(url_taco, headers))
+        hojas_viejos = pd.read_excel(_bajar_excel(url_viejos, headers), sheet_name=None) if url_viejos else {}
+    except Exception as e:
+        return None, None, f"no se pudieron leer los archivos de Taco ({e})"
+
+    etapas, arena, avisos = procesar_taco(df_bombas, df_taco, hojas_viejos)
+    msg = f"{len(etapas)} etapas en {etapas['pad'].nunique()} PADs"
+    if avisos:
+        msg += " · " + "; ".join(avisos)
+    return etapas, arena, msg
+
+
+def procesar_taco(df_bombas, df_taco, hojas_viejos):
+    """Une los tres orígenes en una tabla de etapas y una de arena por malla. Sin Streamlit, para poder probarlo aparte."""
+    avisos = []
+    clave = ["pad", "pozo", "etapa"]
+
+    # ---------- PADs actuales: bombas (etapa x malla) + volumen ----------
+    b = df_bombas.copy()
+    b.columns = b.columns.str.strip()
+    b = b.rename(columns={"nombre_pad": "pad", "nombre_pozo": "pozo", "nro_etapa": "etapa"})
+    b["yacimiento"] = _normalizar_yacimiento(b["yacimiento"])
+    b["etapa"] = pd.to_numeric(b["etapa"], errors="coerce")
+    for col in ["fecha_hora_inicio", "fecha_hora_caudal_70", "fecha_hora_fin"]:
+        b[col] = pd.to_datetime(b[col], errors="coerce")
+    b["tiempo_bombeo [hr]"] = _horas(b["tiempo_bombeo [hr]"])
+
+    arena_act = b[clave + ["agente_sosten", "granulometria", "agente_sosten_real [lbm]", "agente_sosten_diseno [lbm]"]].rename(
+        columns={"agente_sosten": "agente", "granulometria": "malla",
+                 "agente_sosten_real [lbm]": "real_lb", "agente_sosten_diseno [lbm]": "diseno_lb"})
+
+    escalares = ["yacimiento", "fecha_hora_inicio", "fecha_hora_caudal_70", "fecha_hora_fin", "tiempo_bombeo [hr]",
+                 "caudal_fractura [bpm]", "caudal_diseno [bpm]", "concentracion_inicial [ppa]", "concentracion_final [ppa]",
+                 "power [hp]", "presion_promedio [psi]", "presion_minima [psi]", "presion_maxima [psi]"]
+    et_act = b.groupby(clave, as_index=False).agg({c: "first" for c in escalares})
+    suma_arena = arena_act.groupby(clave, as_index=False).agg(arena_lb=("real_lb", "sum"), arena_diseno_lb=("diseno_lb", "sum"))
+    et_act = et_act.merge(suma_arena, on=clave, how="left")
+
+    t = df_taco.copy()
+    t.columns = t.columns.str.strip()
+    t = t.rename(columns={"nombre_pad": "pad", "nombre_pozo": "pozo", "nro_etapa": "etapa"})
+    t["etapa"] = pd.to_numeric(t["etapa"], errors="coerce")
+    col_vol = next((c for c in t.columns if c.lower().startswith("volumen")), None)
+    if col_vol is None:
+        avisos.append("el archivo TACO no tiene columna de volumen")
+        t["agua_m3"] = np.nan
+    else:
+        t["agua_m3"] = pd.to_numeric(t[col_vol], errors="coerce")
+    et_act = et_act.merge(t[clave + ["agua_m3"]].drop_duplicates(clave), on=clave, how="left")
+    sin_vol = int(et_act["agua_m3"].isna().sum())
+    if sin_vol:
+        avisos.append(f"{sin_vol} etapas de los PADs actuales sin volumen en TACO")
+    et_act["origen"] = "actual"
+
+    # ---------- PADs viejos: hoja de etapas + hojas de arena por PAD ----------
+    partes_etapas, partes_arena = [et_act], [arena_act]
+    if hojas_viejos:
+        nombre_datos = next((h for h in hojas_viejos if "datos" in str(h).lower()), None)
+        if nombre_datos is not None:
+            v = hojas_viejos[nombre_datos].copy()
+            v.columns = v.columns.str.strip()
+            v = v.rename(columns={"nombre_pad": "pad", "nombre_pozo": "pozo", "nro_etapa": "etapa"})
+            v["yacimiento"] = _normalizar_yacimiento(v["yacimiento"])
+            v["etapa"] = pd.to_numeric(v["etapa"], errors="coerce")
+            for col in ["fecha_hora_inicio", "fecha_hora_caudal_70", "fecha_hora_fin"]:
+                v[col] = pd.to_datetime(v[col], errors="coerce")
+            v["tiempo_bombeo [hr]"] = _horas(v["tiempo_bombeo [hr]"])
+            col_vol_v = next((c for c in v.columns if c.lower().startswith("volumen")), None)
+            v["agua_m3"] = pd.to_numeric(v[col_vol_v], errors="coerce") if col_vol_v else np.nan
+            et_viejos = v[clave + escalares + ["agua_m3"]].drop_duplicates(clave).copy()
+
+            # arena: una hoja por PAD, con la etapa codificada en el texto "POZO - dd/mm/aaaa - Etapa de Fractura N"
+            filas_arena = []
+            for hoja, df_a in hojas_viejos.items():
+                if not str(hoja).strip().lower().startswith("arena"):
+                    continue
+                pad = str(hoja).strip()[len("arena"):].strip()
+                a = df_a.copy()
+                a.columns = [str(c).strip() for c in a.columns]
+                col_frac = next((c for c in a.columns if c.lower().startswith("fractura")), None)
+                if col_frac is None:
+                    avisos.append(f"la hoja '{hoja}' no tiene la columna Fractura")
+                    continue
+                partes = a[col_frac].astype(str).str.extract(r"^(?P<pozo>.+?)\s*-\s*\d{2}/\d{2}/\d{4}\s*-\s*Etapa de Fractura\s*(?P<etapa>\d+)")
+                col_real = next((c for c in a.columns if "real" in c.lower()), None)
+                col_dis = next((c for c in a.columns if "dise" in c.lower()), None)
+                col_malla = next((c for c in a.columns if "granulom" in c.lower()), None)
+                col_agente = next((c for c in a.columns if "agente_sosten" == c.lower()), None)
+                filas_arena.append(pd.DataFrame({
+                    "pad": pad, "pozo": partes["pozo"].str.strip(), "etapa": pd.to_numeric(partes["etapa"], errors="coerce"),
+                    "agente": a[col_agente] if col_agente else "",
+                    "malla": a[col_malla] if col_malla else "",
+                    "real_lb": pd.to_numeric(a[col_real], errors="coerce") if col_real else np.nan,
+                    "diseno_lb": pd.to_numeric(a[col_dis], errors="coerce") if col_dis else np.nan,
+                }))
+            if filas_arena:
+                arena_viejos = pd.concat(filas_arena, ignore_index=True).dropna(subset=["etapa"])
+                suma_v = arena_viejos.groupby(clave, as_index=False).agg(arena_lb=("real_lb", "sum"), arena_diseno_lb=("diseno_lb", "sum"))
+                et_viejos = et_viejos.merge(suma_v, on=clave, how="left")
+                partes_arena.append(arena_viejos)
+            else:
+                et_viejos["arena_lb"] = np.nan
+                et_viejos["arena_diseno_lb"] = np.nan
+            et_viejos["origen"] = "viejo"
+            partes_etapas.append(et_viejos)
+        else:
+            avisos.append("el archivo de PADs viejos no tiene la hoja 'Datos Fracturas'")
+
+    etapas = pd.concat(partes_etapas, ignore_index=True)
+    arena = pd.concat(partes_arena, ignore_index=True)
+
+    # ---------- columnas finales, nombres simples ----------
+    etapas = etapas.rename(columns={
+        "fecha_hora_inicio": "inicio", "fecha_hora_caudal_70": "caudal_70", "fecha_hora_fin": "fin",
+        "tiempo_bombeo [hr]": "tiempo_bombeo_hr", "caudal_fractura [bpm]": "caudal_bpm", "caudal_diseno [bpm]": "caudal_diseno_bpm",
+        "concentracion_inicial [ppa]": "conc_ini_ppa", "concentracion_final [ppa]": "conc_fin_ppa", "power [hp]": "power_hp",
+        "presion_promedio [psi]": "presion_prom_psi", "presion_minima [psi]": "presion_min_psi", "presion_maxima [psi]": "presion_max_psi",
+    })
+    for col in ["caudal_bpm", "caudal_diseno_bpm", "conc_ini_ppa", "conc_fin_ppa", "power_hp", "presion_prom_psi",
+                "presion_min_psi", "presion_max_psi", "arena_lb", "arena_diseno_lb", "agua_m3", "tiempo_bombeo_hr"]:
+        etapas[col] = pd.to_numeric(etapas[col], errors="coerce")
+    etapas["arena_sacos"] = etapas["arena_lb"] / LB_POR_SACO
+    etapas["arena_diseno_sacos"] = etapas["arena_diseno_lb"] / LB_POR_SACO
+    arena["sacos"] = pd.to_numeric(arena["real_lb"], errors="coerce") / LB_POR_SACO
+    arena["diseno_sacos"] = pd.to_numeric(arena["diseno_lb"], errors="coerce") / LB_POR_SACO
+    arena["malla"] = arena["malla"].astype(str).str.strip()
+
+    # día operativo (06:00) por fin de etapa y número de día dentro del PAD
+    etapas = etapas.dropna(subset=["pad", "pozo", "etapa"]).copy()
+    etapas["etapa"] = etapas["etapa"].astype(int)
+    etapas["fecha_reporte"] = _dia_operativo(etapas["fin"])
+    primer_dia = etapas.groupby("pad")["fecha_reporte"].transform("min")
+    etapas["dia_pad"] = ((etapas["fecha_reporte"] - primer_dia).dt.days + 1).astype("Int64")
+    etapas = etapas.sort_values(["pad", "fin", "pozo", "etapa"]).reset_index(drop=True)
+    return etapas, arena, avisos
+
+
+def resumen_diario_taco(etapas):
+    """Promedios y totales por PAD y día del PAD (para la visión gerencial)."""
+    g = etapas.dropna(subset=["dia_pad"]).groupby(["yacimiento", "pad", "dia_pad"], as_index=False).agg(
+        fecha=("fecha_reporte", "first"),
+        etapas=("etapa", "size"),
+        caudal_prom=("caudal_bpm", "mean"),
+        presion_prom=("presion_prom_psi", "mean"),
+        arena_sacos=("arena_sacos", "sum"),
+        agua_m3=("agua_m3", "sum"),
+    )
+    g = g.sort_values(["pad", "dia_pad"])
+    g["etapas_acum"] = g.groupby("pad")["etapas"].cumsum()
+    return g
+
+
+def resumen_pad_taco(etapas):
+    """Una fila por PAD: totales y promedios."""
+    r = etapas.groupby(["yacimiento", "pad"], as_index=False).agg(
+        pozos=("pozo", "nunique"), etapas=("etapa", "size"), dias=("dia_pad", "max"),
+        inicio=("inicio", "min"), fin=("fin", "max"),
+        caudal_prom=("caudal_bpm", "mean"), presion_prom=("presion_prom_psi", "mean"),
+        arena_sacos=("arena_sacos", "sum"), agua_m3=("agua_m3", "sum"),
+    )
+    r["etapas_dia"] = r["etapas"] / r["dias"].astype(float)
+    r["sacos_etapa"] = r["arena_sacos"] / r["etapas"]
+    r["m3_etapa"] = r["agua_m3"] / r["etapas"]
+    return r.sort_values("fin", ascending=False)
+
+
+# ==========================================
 # BARRA LATERAL
 # ==========================================
 with st.sidebar:
@@ -879,7 +1230,7 @@ with st.sidebar:
              '<div class="brand-sub">Fractura · Tiempos y Continuous Pumping</div></div></div>')
 
     html_out('<div class="side-label">Navegación</div>')
-    seccion_sel = st.radio("Navegación Principal", ["Tiempos y NPT", "Continuous Pumping"], label_visibility="collapsed")
+    seccion_sel = st.radio("Navegación Principal", ["Tiempos y NPT", "Continuous Pumping", "Taco"], label_visibility="collapsed")
 
     html_out('<div class="side-label">Vista</div>')
     _toggle = getattr(st, "toggle", st.checkbox)
@@ -919,9 +1270,24 @@ try:
     else:
         hora_op = "Sin datos"
 
+    # ---- STD por yacimiento y budget ----
+    TABLA_STD, estado_std = descargar_tabla_std(URL_STD)
+    _h2_fechas = df_h2.dropna(subset=['fecha_reporte']) if 'fecha_reporte' in df_h2.columns else df_h2.iloc[0:0]
+    fecha_inicio_pad = _h2_fechas.groupby(['Yacimiento', 'PAD'])['fecha_reporte'].min().to_dict() if not _h2_fechas.empty else {}
+    fecha_fin_yacimiento = _h2_fechas.groupby('Yacimiento')['fecha_reporte'].max().to_dict() if not _h2_fechas.empty else {}
+
+    def std_del_pad(yacimiento, pad):
+        # Todo el PAD se compara con el budget vigente el día en que arrancó
+        return resolver_std(TABLA_STD, yacimiento, fecha_inicio_pad.get((yacimiento, pad)))
+
+    def std_del_yacimiento(yacimiento):
+        # Para el resumen por yacimiento: budget vigente en la última fecha con datos
+        return resolver_std(TABLA_STD, yacimiento, fecha_fin_yacimiento.get(yacimiento))
+
     with estado_slot:
         html_out(f'<div class="status-card"><div class="k">Última OP en pozo</div><div class="v">{esc(hora_op)}</div>'
-                 f'<div class="ok"><i></i>Base actualizada · {esc(hora_actual)}</div></div>')
+                 f'<div class="ok"><i></i>Base actualizada · {esc(hora_actual)}</div>'
+                 f'<div class="k" style="margin-top:8px">STD</div><div class="v" style="font-size:12.5px;font-weight:500">{esc(estado_std)}</div></div>')
 
     # ==========================================
     # DASHBOARD: SECCIÓN 1 (TIEMPOS)
@@ -992,7 +1358,8 @@ try:
             prom_pad_npt_ramp = df_t1['RAMP NPT min'].cumsum() / acum_etapas if 'RAMP NPT min' in df_t1.columns else 0
             prom_pad_npt_frac = df_t1['FRAC NPT min'].cumsum() / acum_etapas if 'FRAC NPT min' in df_t1.columns else 0
 
-            std_t1 = PARAMETROS_STD.get(sel_yac_t1, PARAMETROS_STD["Default"])
+            std_t1 = std_del_pad(sel_yac_t1, sel_pad_t1)
+            linea_budget(std_t1, f"STD de {sel_pad_t1}")
             std_setupf_u = std_t1["Setupf_STD_min"] / factor_div
             std_ramp_u = std_t1["Ramp_STD_min"] / factor_div
             std_frac_u = std_t1["Frac_STD_min"] / factor_div
@@ -1173,7 +1540,7 @@ try:
                 df_pad = df_t2[df_t2['PAD'] == pad]
                 if df_pad.empty: continue
                 yac = df_pad['Yacimiento'].iloc[0]
-                std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])
+                std = std_del_pad(yac, pad)
 
                 etapas_totales = df_pad['cantidad etapas'].sum()
                 setup_prom = df_pad['SETUPF Sin NPT min'].sum() / etapas_totales if etapas_totales > 0 else 0
@@ -1185,6 +1552,7 @@ try:
                 resumen_macro.append({
                     "Yacimiento": yac,
                     "PAD": pad,
+                    "Budget": std.get("budget", ""),
                     "Cantidad Etapas": etapas_totales,
                     "Cantidad Etapas STD": std.get("Etapas_Dia_STD", 0),
                     "Setupf Prom PAD (min)": round(setup_prom, 2),
@@ -1208,18 +1576,18 @@ try:
                         return "good" if float(f[col]) <= float(f[pares[col]]) else "bad"
                     except Exception:
                         return None
-                if col.endswith("STD (min)") or col == "Cantidad Etapas STD":
+                if col.endswith("STD (min)") or col in ("Cantidad Etapas STD", "Budget"):
                     return "dim"
                 return None
 
             tabla(df_macro,
-                  columnas=[("Yacimiento", "Yacimiento", "txt"), ("PAD", "PAD", "txt"),
+                  columnas=[("Yacimiento", "Yacimiento", "txt"), ("PAD", "PAD", "txt"), ("Budget", "Budget", "txt"),
                             ("Cantidad Etapas", "Total", "num"), ("Cantidad Etapas STD", "STD por día", "num"),
                             ("Setupf Prom PAD (min)", "Prom PAD", "num"), ("Setupf STD (min)", "STD", "num"),
                             ("Ramp Prom PAD (min)", "Prom PAD", "num"), ("Ramp STD (min)", "STD", "num"),
                             ("Frac Prom PAD (min)", "Prom PAD", "num"), ("Frac STD (min)", "STD", "num"),
                             ("NPT Total PAD (min)", "Total PAD", "num"), ("NPT Prom PAD (min)", "Prom / etapa", "num")],
-                  grupos=[("", 2, None), ("Etapas", 2, None), ("Setupf (min)", 2, None), ("Ramp (min)", 2, None), ("Frac (min)", 2, None), ("NPT (min)", 2, None)],
+                  grupos=[("", 3, None), ("Etapas", 2, None), ("Setupf (min)", 2, None), ("Ramp (min)", 2, None), ("Frac (min)", 2, None), ("NPT (min)", 2, None)],
                   clases=clases_macro)
 
             if not df_macro.empty:
@@ -1491,7 +1859,9 @@ try:
             todas_las_fechas = set(df_c1_h9['fecha_reporte'].dropna()) | set(df_c1_h9['fecha_reporte_cp'].dropna()) | set(df_pad_h2['fecha_reporte'].dropna())
             fechas_pad = sorted([f for f in todas_las_fechas if pd.notna(f)])
 
-            std_yac = PARAMETROS_STD.get(sel_yac_c1, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
+            std_pad_c1 = std_del_pad(sel_yac_c1, sel_pad_c1)
+            std_yac = std_pad_c1["Etapas_Dia_STD"]
+            linea_budget(std_pad_c1, f"STD de {sel_pad_c1}")
 
             datos_cp = []
             acum_etapas_fin = 0
@@ -1745,7 +2115,8 @@ try:
                 df_pad_h9, df_pad_frag = procesar_pad_cp(df_pad_raw, df_pad_h2)
 
                 yac = df_pad_h9['Yacimiento'].iloc[0]
-                std = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
+                std_info = std_del_pad(yac, pad)
+                std = std_info["Etapas_Dia_STD"]
 
                 max_fecha = df_pad_h9['fecha_reporte'].max()
                 ultima_fecha = pd.to_datetime(max_fecha).strftime('%d/%m/%Y') if pd.notna(max_fecha) else "S/D"
@@ -1793,6 +2164,7 @@ try:
                 resumen_cp.append({
                     "Yacimiento": yac,
                     "PAD": pad,
+                    "Budget": std_info.get("budget", ""),
                     "Etapas Acum.": etapas_totales,
                     "Total CP Logrados": cp_totales,
                     "% CP Final (PAD)": f"{pct_cp_final:.1f}%",
@@ -1811,7 +2183,7 @@ try:
             seccion("Cuadro 1 · Foto final por PAD")
 
             def clases_res(f, col):
-                if col in ("Etapas STD", "Posibles CP (Total - 4)", "Última Fecha"):
+                if col in ("Etapas STD", "Posibles CP (Total - 4)", "Última Fecha", "Budget"):
                     return "dim"
                 if col == "Etapas/Día (Real)":
                     try:
@@ -1823,12 +2195,12 @@ try:
                 return None
 
             tabla(df_resumen_cp,
-                  columnas=[("Yacimiento", "Yacimiento", "txt"), ("PAD", "PAD", "txt"), ("Última Fecha", "Último día", "txt"),
+                  columnas=[("Yacimiento", "Yacimiento", "txt"), ("PAD", "PAD", "txt"), ("Budget", "Budget", "txt"), ("Última Fecha", "Último día", "txt"),
                             ("Etapas Acum.", "Acum.", "num"), ("Posibles CP (Total - 4)", "Posibles CP", "num"),
                             ("Total CP Logrados", "Logrados", "num"), ("% CP Final (PAD)", "% CP final", "pct"),
                             ("Etapas STD", "STD", "num"), ("Etapas/Día (Real)", "Real", "num"),
                             ("Tiempo de Bombeo (hr)", "Bombeo", "num"), ("Tiempo Total de Bombeo Continuo (hr)", "Continuo", "num"), ("Máx. Diario CP (hr)", "Máx. diario", "num")],
-                  grupos=[("", 3, None), ("Etapas", 2, None), ("Continuous Pumping", 2, None), ("Etapas / día", 2, None), ("Horas de bombeo", 3, None)],
+                  grupos=[("", 4, None), ("Etapas", 2, None), ("Continuous Pumping", 2, None), ("Etapas / día", 2, None), ("Horas de bombeo", 3, None)],
                   clases=clases_res)
 
             if not df_resumen_cp.empty:
@@ -1878,7 +2250,7 @@ try:
                             minutos_totales_yac += pd.to_numeric(df_pad_h2['duracion_minutos'], errors='coerce').sum()
 
                 pct_cp_yac = (cp_totales_yac / posibles_yac * 100) if posibles_yac > 0 else 0
-                std_yac = PARAMETROS_STD.get(yac, PARAMETROS_STD["Default"])["Etapas_Dia_STD"]
+                std_yac = std_del_yacimiento(yac)["Etapas_Dia_STD"]
 
                 dias_reales_yac = minutos_totales_yac / 1440.0
                 etapas_dia_real_yac = (etapas_totales_yac / dias_reales_yac) if dias_reales_yac > 0 else 0
@@ -1917,6 +2289,276 @@ try:
                             ("Tiempo de Bombeo (hr)", "Bombeo", "num"), ("Tiempo Total de Bombeo Continuo (hr)", "Continuo", "num"), ("Máx. Diario CP (hr)", "Máx. diario", "num")],
                   grupos=[("", 1, None), ("Etapas", 1, None), ("Continuous Pumping", 2, None), ("Etapas / día", 2, None), ("Horas de bombeo", 3, None)],
                   clases=clases_yac)
+
+
+    # ==========================================
+    # DASHBOARD: SECCIÓN 3 (TACO)
+    # ==========================================
+    elif seccion_sel == "Taco":
+        encabezado("Sección 3", "Taco",
+                   "Estado, caudal, presión, arena y agua por etapa de cada PAD, y la evolución diaria comparada entre PADs.")
+
+        etapas_taco, arena_taco, estado_taco = descargar_taco(URL_BOMBAS, URL_TACO, URL_VIEJOS)
+
+        if etapas_taco is None or etapas_taco.empty:
+            aviso(f"Sin datos de Taco: {estado_taco}. Configurá URL_BOMBAS, URL_TACO y URL_VIEJOS con los links de Drive.", "error")
+        else:
+            html_out('<div class="chips" style="margin:-4px 0 10px">' + chip("Datos", estado_taco, punto=True) + "</div>")
+
+            # ---- definiciones de las 5 vistas ----
+            VISTAS_TACO = {
+                "Estado":           dict(col=None,               unidad="",      escala=None,      color=TEMA["cp"]),
+                "Caudal promedio":  dict(col="caudal_bpm",       unidad="bpm",   escala="Blues",   color=TEMA["setupf"]),
+                "Presión promedio": dict(col="presion_prom_psi", unidad="psi",   escala="Reds",    color=TEMA["presion"]),
+                "Arena":            dict(col="arena_sacos",      unidad="sacos", escala="Oranges", color=TEMA["ramp"]),
+                "Agua bombeada":    dict(col="agua_m3",          unidad="m³",    escala="Blues",   color=TEMA["agua"]),
+            }
+
+            def fmt_miles(v, dec=0):
+                # Números grandes con punto de miles (10.421); los chicos igual que fmt_num
+                try:
+                    if v is None or pd.isna(v):
+                        return "–"
+                    v = float(v)
+                except Exception:
+                    return esc(v)
+                if abs(v) >= 1000:
+                    return f"{v:,.{dec}f}".replace(",", ".")
+                return fmt_num(v)
+
+            def hover_etapa(f, mallas_txt=""):
+                # Ficha de la etapa que se muestra al pasar el mouse por la pastilla
+                ini = f["inicio"].strftime("%d/%m %H:%M") if pd.notna(f["inicio"]) else "–"
+                fin = f["fin"].strftime("%d/%m %H:%M") if pd.notna(f["fin"]) else "–"
+                h = (f"<b>{esc(f['pozo'])} · Etapa {int(f['etapa'])}</b>  <span style='color:{TEMA['text2']}'>día {f['dia_pad']}</span><br>"
+                     f"{ini} → {fin} · {fmt_num(f['tiempo_bombeo_hr'])} hr de bombeo<br>"
+                     f"Caudal {fmt_num(f['caudal_bpm'])} bpm (diseño {fmt_num(f['caudal_diseno_bpm'])})<br>"
+                     f"Presión prom {fmt_miles(f['presion_prom_psi'])} psi · mín {fmt_miles(f['presion_min_psi'])} · máx {fmt_miles(f['presion_max_psi'])}<br>"
+                     f"Arena {fmt_miles(f['arena_sacos'])} sacos (diseño {fmt_miles(f['arena_diseno_sacos'])})<br>"
+                     f"Agua {fmt_miles(f['agua_m3'])} m³ · Conc. {fmt_num(f['conc_ini_ppa'])} → {fmt_num(f['conc_fin_ppa'])} ppa")
+                if mallas_txt:
+                    h += "<br>" + mallas_txt
+                return h
+
+            def texto_mallas(arena_pad):
+                # "100: 1.252 sacos · 40/70: 0 sacos" por etapa
+                if arena_pad is None or arena_pad.empty:
+                    return {}
+                res = {}
+                for (pozo, etapa), g in arena_pad.groupby(["pozo", "etapa"]):
+                    partes = [f"malla {esc(m)}: {fmt_miles(s)} sacos" for m, s in zip(g["malla"], g["sacos"])]
+                    res[(pozo, int(etapa))] = "<span style='color:" + TEMA["text2"] + "'>" + " · ".join(partes) + "</span>"
+                return res
+
+            def grilla_etapas(df_pad, vista, dias_sel, arena_pad):
+                """Una fila por pozo, una pastilla por etapa. Las etapas de los días elegidos van coloreadas; el resto en gris."""
+                v = VISTAS_TACO[vista]
+                df = df_pad.copy()
+                pozos = sorted(df["pozo"].unique().tolist())
+                cuentas = df.groupby("pozo")["etapa"].size().to_dict()
+                etiquetas = {p: f"{p}  ·  {cuentas.get(p, 0)} etapas" for p in pozos}
+                df["y"] = df["pozo"].map(etiquetas)
+                mallas = texto_mallas(arena_pad) if vista == "Arena" else {}
+                df["hover"] = [hover_etapa(f, mallas.get((f["pozo"], int(f["etapa"])), "")) for _, f in df.iterrows()]
+                df["sel"] = df["dia_pad"].isin(dias_sel)
+
+                n_max = int(df["etapa"].max())
+                tam = max(9, min(22, int(1050 / (n_max + 2) * 0.85)))
+                fig = go.Figure()
+                comunes = dict(mode="markers", hovertemplate="%{customdata}<extra></extra>")
+
+                # etapas fuera de los días elegidos: en gris, siempre atrás
+                fuera = df[~df["sel"]]
+                if not fuera.empty:
+                    fig.add_scatter(x=fuera["etapa"], y=fuera["y"], customdata=fuera["hover"], name="Otros días",
+                                    marker=dict(symbol="square", size=tam, color=TEMA["pill_off"], line=dict(color=TEMA["surface"], width=1)), **comunes)
+
+                dentro = df[df["sel"]]
+                if vista == "Estado":
+                    fig.add_scatter(x=dentro["etapa"], y=dentro["y"], customdata=dentro["hover"], name="Completada",
+                                    marker=dict(symbol="square", size=tam, color=v["color"], line=dict(color=TEMA["surface"], width=1)), **comunes)
+                else:
+                    valores_pad = pd.to_numeric(df[v["col"]], errors="coerce")
+                    cmin = float(valores_pad.min()) if valores_pad.notna().any() else 0.0
+                    cmax = float(valores_pad.max()) if valores_pad.notna().any() else 1.0
+                    if cmax <= cmin:
+                        cmax = cmin + 1.0
+                    fig.add_scatter(x=dentro["etapa"], y=dentro["y"], customdata=dentro["hover"], name=vista,
+                                    marker=dict(symbol="square", size=tam, color=pd.to_numeric(dentro[v["col"]], errors="coerce"),
+                                                colorscale=v["escala"], reversescale=(MODO == "oscuro"),
+                                                cmin=cmin, cmax=cmax,
+                                                line=dict(color=TEMA["surface"], width=1),
+                                                colorbar=dict(title=dict(text=v["unidad"], font=dict(size=11, color=TEMA["text2"])), thickness=10, len=0.85,
+                                                              tickfont=dict(size=10, color=TEMA["muted"]), outlinewidth=0)),
+                                    **comunes)
+
+                estilo_fig(fig, alto=max(230, 90 + 50 * len(pozos)), leyenda=False, hover="closest")
+                fig.update_xaxes(range=[n_max + 0.8, 0.2], dtick=1 if n_max <= 80 else 2, tickfont=dict(size=10, color=TEMA["muted"]),
+                                 showgrid=False, showline=False, title_text="etapa", title_font=dict(size=11, color=TEMA["muted"]))
+                fig.update_yaxes(type="category", categoryorder="array", categoryarray=[etiquetas[p] for p in pozos], autorange="reversed",
+                                 showgrid=True, gridcolor=TEMA["grid"], tickfont=dict(size=12, color=TEMA["text"]))
+                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10))
+                return fig
+
+            def small_multiples(diario, pads, col, unidad, color, decimales=0):
+                """Un panel por PAD con la serie diaria (día del PAD en el eje x)."""
+                n = len(pads)
+                if n == 0:
+                    return None
+                ncol = min(5, n)
+                nfil = int(np.ceil(n / ncol))
+                fig = make_subplots(rows=nfil, cols=ncol, subplot_titles=pads, horizontal_spacing=0.045, vertical_spacing=0.16 if nfil > 1 else 0.1)
+                for i, pad in enumerate(pads):
+                    r, c = i // ncol + 1, i % ncol + 1
+                    d = diario[diario["pad"] == pad].sort_values("dia_pad")
+                    x = d["dia_pad"].astype(int); y = d[col]
+                    fig.add_scatter(x=x, y=y, mode="lines+markers", name=pad, line=dict(color=color, width=2),
+                                    marker=dict(size=5, color=color),
+                                    customdata=np.stack([d["fecha"].dt.strftime("%d/%m/%Y"), d["etapas"]], axis=-1),
+                                    hovertemplate="Día %{x} (%{customdata[0]})<br>%{y:,." + str(decimales) + "f} " + unidad + " · %{customdata[1]} etapas<extra></extra>",
+                                    row=r, col=c)
+                    if len(d):
+                        fig.add_scatter(x=[x.iloc[-1]], y=[y.iloc[-1]], mode="markers", showlegend=False, hoverinfo="skip",
+                                        marker=dict(size=9, color=color, line=dict(color=TEMA["surface"], width=2)), row=r, col=c)
+                estilo_fig(fig, alto=max(240, 215 * nfil), leyenda=False, hover="closest")
+                fig.update_annotations(font=dict(size=12, color=TEMA["text"]))
+                fig.update_xaxes(showgrid=False, tickfont=dict(size=10), dtick=5 if diario["dia_pad"].max() > 12 else 1)
+                fig.update_yaxes(tickfont=dict(size=10), separatethousands=True)
+                for c in range(1, ncol + 1):
+                    fig.update_xaxes(title_text="día del PAD", title_font=dict(size=10, color=TEMA["muted"]), row=nfil, col=c)
+                fig.update_layout(margin=dict(l=8, r=8, t=30, b=8))
+                return fig
+
+            def tabla_por_dia(diario, pads, col, decimales=0):
+                # Filas = día del PAD, columnas = PADs
+                piv = diario.pivot_table(index="dia_pad", columns="pad", values=col, aggfunc="first").reindex(columns=pads)
+                piv = piv.sort_index()
+                vista = pd.DataFrame({"Día": piv.index.astype(int)})
+                for p in pads:
+                    vista[p] = [fmt_miles(v, decimales) if pd.notna(v) else "–" for v in piv[p].values]
+                tabla(vista, columnas=[("Día", "Día", "num")] + [(p, p, "rawtxt") for p in pads], alto_max=520, compacta=True)
+
+            tab5, tab6 = st.tabs(["🧱 Diario por PAD", "📋 Resumen gerencial"])
+
+            # ---------------- PESTAÑA: PAD ÚNICO ----------------
+            with tab5:
+                col_a, col_b, col_c = st.columns([1, 1, 1.2])
+                ult = etapas_taco.sort_values("fin").iloc[-1]
+                yacs_taco = sorted(etapas_taco["yacimiento"].dropna().unique().tolist())
+                with col_a:
+                    sel_yac_k = st.selectbox("Yacimiento", yacs_taco, index=yacs_taco.index(ult["yacimiento"]) if ult["yacimiento"] in yacs_taco else 0, key="yac_taco")
+                pads_k = (etapas_taco[etapas_taco["yacimiento"] == sel_yac_k].groupby("pad")["fin"].max().sort_values(ascending=False).index.tolist())
+                with col_b:
+                    sel_pad_k = st.selectbox("PAD", pads_k, index=0, key="pad_taco")
+                with col_c:
+                    vista_k = st.selectbox("Vista", list(VISTAS_TACO.keys()), index=0, key="vista_taco")
+
+                df_pad_k = etapas_taco[(etapas_taco["yacimiento"] == sel_yac_k) & (etapas_taco["pad"] == sel_pad_k)].copy()
+                arena_pad_k = arena_taco[arena_taco["pad"] == sel_pad_k] if arena_taco is not None else None
+
+                dias_pad = df_pad_k.dropna(subset=["dia_pad"]).groupby("dia_pad")["fecha_reporte"].first().sort_index()
+                etiqueta_dia = {int(d): f"Día {int(d)} · {f.strftime('%d/%m')}" for d, f in dias_pad.items()}
+                dias_sel = st.multiselect("Días del PAD (vacío = todos)", list(etiqueta_dia.keys()), default=[],
+                                          format_func=lambda d: etiqueta_dia[d], key="dias_taco")
+                dias_activos = set(dias_sel) if dias_sel else set(etiqueta_dia.keys())
+
+                df_sel = df_pad_k[df_pad_k["dia_pad"].isin(dias_activos)]
+                if not df_sel.empty:
+                    ult_k = df_sel.sort_values("fin").iloc[-1]
+                    kpis([
+                        dict(label="Etapas", value=fmt_num(len(df_sel)),
+                             hint=(f"de {len(df_pad_k)} del PAD · {len(dias_activos)} de {len(etiqueta_dia)} días" if dias_sel else f"{len(etiqueta_dia)} días · {fmt_num(len(df_pad_k) / max(1, len(etiqueta_dia)))} etapas/día"),
+                             color=TEMA["cp"]),
+                        dict(label="Caudal prom.", value=fmt_num(round(df_sel["caudal_bpm"].mean(), 1)), unit="bpm",
+                             hint=f"diseño {fmt_num(round(df_sel['caudal_diseno_bpm'].mean(), 1))} bpm", color=TEMA["setupf"]),
+                        dict(label="Presión prom.", value=fmt_miles(df_sel["presion_prom_psi"].mean()), unit="psi",
+                             hint=f"máx {fmt_miles(df_sel['presion_max_psi'].max())} psi", color=TEMA["presion"]),
+                        dict(label="Arena", value=fmt_miles(df_sel["arena_sacos"].sum()), unit="sacos",
+                             hint=f"{fmt_miles(df_sel['arena_sacos'].mean())} sacos por etapa", color=TEMA["ramp"]),
+                        dict(label="Agua bombeada", value=fmt_miles(df_sel["agua_m3"].sum()), unit="m³",
+                             hint=f"{fmt_miles(df_sel['agua_m3'].mean())} m³ por etapa", color=TEMA["agua"]),
+                        dict(label="Última etapa", value=f"{ult_k['pozo']} · {int(ult_k['etapa'])}", chico=True,
+                             hint=ult_k["fin"].strftime("fin %d/%m/%Y %H:%M") if pd.notna(ult_k["fin"]) else "", color=TEMA["accent"]),
+                    ])
+
+                seccion(f"Etapas por pozo · {vista_k}", f"{sel_pad_k} · pasá el mouse por una etapa para ver sus datos")
+                if vista_k == "Estado":
+                    leyenda([("Etapa completada", TEMA["cp"])] + ([("Fuera de los días elegidos", TEMA["pill_off"])] if dias_sel else []))
+                elif dias_sel:
+                    leyenda([("Fuera de los días elegidos", TEMA["pill_off"])])
+                if df_pad_k.empty:
+                    aviso("No hay etapas cargadas para este PAD.")
+                else:
+                    mostrar_fig(grilla_etapas(df_pad_k, vista_k, dias_activos, arena_pad_k))
+
+                seccion("Detalle de etapas", "de los días elegidos" if dias_sel else "todo el PAD", chica=True)
+                det = df_sel.sort_values("fin", ascending=False).copy()
+                if not det.empty:
+                    det["Día"] = det["dia_pad"].astype(int)
+                    det["Inicio"] = det["inicio"].dt.strftime("%d/%m %H:%M")
+                    det["Fin"] = det["fin"].dt.strftime("%d/%m %H:%M")
+                    det["Presión"] = [f"{fmt_miles(p)} <span style='color:var(--muted)'>({fmt_miles(mn)}–{fmt_miles(mx)})</span>" for p, mn, mx in zip(det["presion_prom_psi"], det["presion_min_psi"], det["presion_max_psi"])]
+                    det["Arena"] = [fmt_miles(v) for v in det["arena_sacos"]]
+                    det["Agua"] = [fmt_miles(v) for v in det["agua_m3"]]
+                    tabla(det, columnas=[("Día", "Día", "num"), ("pozo", "Pozo", "txt"), ("etapa", "Etapa", "num"), ("Inicio", "Inicio", "txt"), ("Fin", "Fin", "txt"),
+                                         ("tiempo_bombeo_hr", "Bombeo (hr)", "num"), ("caudal_bpm", "Caudal (bpm)", "num"), ("Presión", "Presión prom (mín–máx) psi", "raw"),
+                                         ("Arena", "Arena (sacos)", "raw"), ("Agua", "Agua (m³)", "raw"), ("conc_fin_ppa", "Conc. final (ppa)", "num")],
+                          alto_max=440, compacta=True)
+                else:
+                    tabla(pd.DataFrame(), [])
+
+            # ---------------- PESTAÑA: RESUMEN GERENCIAL ----------------
+            with tab6:
+                col_g1, col_g2, col_g3 = st.columns([1, 1.4, 0.8])
+                with col_g1:
+                    sel_yacs_g = st.multiselect("Yacimiento(s)", yacs_taco, default=yacs_taco, key="yac_taco_g")
+                pads_g_disp = (etapas_taco[etapas_taco["yacimiento"].isin(sel_yacs_g)].groupby("pad")["inicio"].min().sort_values().index.tolist())
+                with col_g2:
+                    sel_pads_g = st.multiselect("PAD(s)", pads_g_disp, default=pads_g_disp, key="pad_taco_g")
+                with col_g3:
+                    modo_g = selector_pildoras("Ver como", ["Gráficos", "Tablas"], "Gráficos", "modo_taco_g")
+
+                pads_g = [p for p in pads_g_disp if p in sel_pads_g]
+                et_g = etapas_taco[etapas_taco["pad"].isin(pads_g)]
+                diario_g = resumen_diario_taco(et_g) if not et_g.empty else pd.DataFrame()
+                resumen_g = resumen_pad_taco(et_g) if not et_g.empty else pd.DataFrame()
+
+                seccion("Resumen por PAD", "promedios de caudal y presión por etapa; totales de arena y agua")
+                if not resumen_g.empty:
+                    r = resumen_g.copy()
+                    r = r.set_index("pad").loc[pads_g].reset_index()
+                    r["Período"] = [f"{a.strftime('%d/%m/%y')} – {b.strftime('%d/%m/%y')}" for a, b in zip(r["inicio"], r["fin"])]
+                    for c in ["caudal_prom", "etapas_dia"]:
+                        r[c] = r[c].round(1)
+                    for c in ["presion_prom", "arena_sacos", "agua_m3", "sacos_etapa", "m3_etapa"]:
+                        r[c] = [fmt_miles(v) for v in r[c]]
+                    tabla(r, columnas=[("yacimiento", "Yacimiento", "txt"), ("pad", "PAD", "txt"), ("Período", "Período", "txt"), ("pozos", "Pozos", "num"),
+                                       ("etapas", "Etapas", "num"), ("dias", "Días", "num"), ("etapas_dia", "Etapas/día", "num"),
+                                       ("caudal_prom", "Caudal prom (bpm)", "num"), ("presion_prom", "Presión prom (psi)", "raw"),
+                                       ("arena_sacos", "Arena (sacos)", "raw"), ("sacos_etapa", "Sacos/etapa", "raw"),
+                                       ("agua_m3", "Agua (m³)", "raw"), ("m3_etapa", "m³/etapa", "raw")],
+                          grupos=[("", 3, None), ("Etapas", 4, None), ("Promedios por etapa", 2, None), ("Arena", 2, None), ("Agua", 2, None)],
+                          compacta=True)
+                else:
+                    tabla(pd.DataFrame(), [])
+
+                metricas_g = [
+                    ("Caudal por día", "promedio del caudal de las etapas del día (bpm)", "caudal_prom", "bpm", TEMA["setupf"], 1),
+                    ("Presión por día", "promedio de la presión promedio de las etapas del día (psi)", "presion_prom", "psi", TEMA["presion"], 0),
+                    ("Arena por día", "sacos bombeados en el día", "arena_sacos", "sacos", TEMA["ramp"], 0),
+                    ("Agua por día", "m³ bombeados en el día", "agua_m3", "m³", TEMA["agua"], 0),
+                    ("Etapas acumuladas", "etapas completadas acumuladas vs día del PAD", "etapas_acum", "etapas", TEMA["cp"], 0),
+                ]
+                if diario_g.empty:
+                    aviso("Elegí al menos un PAD.")
+                for titulo_m, sub_m, col_m, unidad_m, color_m, dec_m in (metricas_g if not diario_g.empty else []):
+                    seccion(titulo_m, sub_m)
+                    if modo_g == "Tablas":
+                        tabla_por_dia(diario_g, pads_g, col_m, dec_m)
+                    else:
+                        fig_m = small_multiples(diario_g, pads_g, col_m, unidad_m, color_m, dec_m)
+                        if fig_m is not None:
+                            mostrar_fig(fig_m)
 
 except Exception as e:
     aviso(f"Ocurrió un error al procesar el tablero. Detalles: {e}", "error")
