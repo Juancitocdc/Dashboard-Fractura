@@ -1203,6 +1203,7 @@ def resumen_diario_taco(etapas):
         agua_m3=("agua_m3", "sum"),
         arena_prom=("arena_sacos", "mean"),   # sacos promedio por etapa del día
         agua_prom=("agua_m3", "mean"),        # m³ promedio por etapa del día
+        conc_fin_prom=("conc_fin_ppa", "mean"),  # concentración final de arena promedio de las etapas del día
     )
     g = g.sort_values(["pad", "dia_pad"])
     g["etapas_acum"] = g.groupby("pad")["etapas"].cumsum()
@@ -2553,6 +2554,7 @@ try:
                     ("Presión por día", "promedio de la presión promedio de las etapas del día (psi)", "presion_prom", "psi", TEMA["presion"], 0),
                     ("Arena por día", "promedio de sacos por etapa de las etapas del día", "arena_prom", "sacos", TEMA["ramp"], 0),
                     ("Agua por día", "promedio de m³ por etapa de las etapas del día", "agua_prom", "m³", TEMA["agua"], 0),
+                    ("Concentración final por día", "promedio de la concentración final de arena de las etapas del día (ppa)", "conc_fin_prom", "ppa", TEMA["otros"], 2),
                     ("Etapas acumuladas", "etapas completadas acumuladas vs día del PAD", "etapas_acum", "etapas", TEMA["cp"], 0),
                 ]
                 if diario_g.empty:
