@@ -1965,6 +1965,36 @@ try:
                     dict(label="Máx. tren continuo", value=fmt_num(max_cp_rango), unit="hr", hint="mayor bloque diario del período", color=TEMA["frac"]),
                 ])
 
+                # ---- Tarjetas de tiempos del último día cerrado (06:00), desde la hoja 8 del mismo PAD ----
+                h8_pad_k = df_h8[(df_h8['Yacimiento'] == sel_yac_c1) & (df_h8['PAD'] == sel_pad_c1)].copy()
+                col_fecha_h8k = 'fecha reporte' if 'fecha reporte' in h8_pad_k.columns else 'fecha_reporte'
+                if not h8_pad_k.empty and 'cantidad etapas' in h8_pad_k.columns:
+                    h8_pad_k['_fecha'] = pd.to_datetime(h8_pad_k[col_fecha_h8k], errors='coerce')
+                    h8_pad_k = h8_pad_k.dropna(subset=['_fecha']).sort_values('_fecha')
+                    # promedio PAD acumulado hasta cada día, con el mismo cálculo que la Sección 1
+                    acum_et_k = h8_pad_k['cantidad etapas'].cumsum().replace(0, np.nan)
+                    h8_pad_k['_setupf_pad'] = h8_pad_k['SETUPF Sin NPT min'].cumsum() / acum_et_k
+                    h8_pad_k['_ramp_pad'] = h8_pad_k['RAMP Sin NPT min'].cumsum() / acum_et_k
+                    hasta = h8_pad_k[h8_pad_k['_fecha'].dt.date <= f_fin_c1]
+                    if not hasta.empty:
+                        dia_k = hasta.iloc[-1]
+                        std_setupf_k = std_pad_c1["Setupf_STD_min"]
+                        std_ramp_k = std_pad_c1["Ramp_STD_min"]
+                        d1, k1 = delta_vs_std(dia_k['Promedio SETUPF Sin NPT min'], std_setupf_k, "min")
+                        d2, k2 = delta_vs_std(dia_k['_setupf_pad'], std_setupf_k, "min")
+                        d3, k3 = delta_vs_std(dia_k['Promedio RAMP Sin NPT min'], std_ramp_k, "min")
+                        d4, k4 = delta_vs_std(dia_k['_ramp_pad'], std_ramp_k, "min")
+                        seccion("Tiempos del último día cerrado", f"{dia_k['_fecha'].strftime('%d/%m/%Y')} · día operativo de 06:00 a 06:00 · {int(dia_k['cantidad etapas'])} etapas · sin NPT", chica=True)
+                        kpis([
+                            dict(label="Setupf prom 24 hs", value=fmt_num(round(dia_k['Promedio SETUPF Sin NPT min'], 2)), unit="min", delta=d1, delta_tipo=k1, color=TEMA["setupf"]),
+                            dict(label="Setupf prom PAD", value=fmt_num(round(dia_k['_setupf_pad'], 2)), unit="min", delta=d2, delta_tipo=k2, color=TEMA["setupf"]),
+                            dict(label="Ramp prom 24 hs", value=fmt_num(round(dia_k['Promedio RAMP Sin NPT min'], 2)), unit="min", delta=d3, delta_tipo=k3, color=TEMA["ramp"]),
+                            dict(label="Ramp prom PAD", value=fmt_num(round(dia_k['_ramp_pad'], 2)), unit="min", delta=d4, delta_tipo=k4, color=TEMA["ramp"]),
+                            dict(label="NPT del día", value=fmt_num(round(dia_k['NPT Total min'] / 60, 2)), unit="hr",
+                                 hint=f"{fmt_num(round(dia_k['NPT Total min'], 1))} min · Setupf {fmt_num(round(dia_k['SETUPF NPT min'] / 60, 2))} hr · Ramp {fmt_num(round(dia_k['RAMP NPT min'] / 60, 2))} hr · Frac {fmt_num(round(dia_k['FRAC NPT min'] / 60, 2))} hr",
+                                 color=TEMA["bad"]),
+                        ])
+
                 # ---- Gráficos ----
                 seccion("Evolución diaria del CP", f"{sel_pad_c1}")
                 fechas_x = a_fecha(df_cuadro1_filtrado["Fecha Reporte"])
