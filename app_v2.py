@@ -1990,13 +1990,14 @@ try:
                                     marker=dict(size=7, color=TEMA["setupf_linea"], line=dict(color=TEMA["surface"], width=1.5)),
                                     hovertemplate="%{y:.1f} min<extra>Setupf prom</extra>")
                     linea_std(fig, std_yac, f"STD {fmt_num(std_yac)} etapas/día")
-                    estilo_fig(fig, alto=300, leyenda=True)
+                    estilo_fig(fig, alto=340, leyenda=True)
+                    # leyenda abajo para que no se pise con el título ni con la etiqueta del STD; eje derecho con margen automático
                     fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.05,
                                       title=dict(text="Etapas, CP y NPT por día · Setupf promedio", font=dict(size=13, color=TEMA["text"]), x=0, xanchor="left"),
-                                      legend=dict(y=1.0, x=1, xanchor="right"), margin=dict(t=44, r=10),
-                                      yaxis=dict(title=dict(text="etapas · NPT (hs)", font=dict(size=11, color=TEMA["muted"]))),
-                                      yaxis2=dict(title=dict(text="Setupf prom (min)", font=dict(size=11, color=TEMA["setupf_linea"])),
-                                                  overlaying="y", side="right", showgrid=False, zeroline=False, rangemode="tozero",
+                                      legend=dict(orientation="h", y=-0.28, yanchor="top", x=0, xanchor="left"), margin=dict(t=44, r=16, b=10),
+                                      yaxis=dict(title=dict(text="etapas · NPT (hs)", font=dict(size=11, color=TEMA["muted"]), standoff=6)),
+                                      yaxis2=dict(title=dict(text="Setupf prom (min)", font=dict(size=11, color=TEMA["setupf_linea"]), standoff=6),
+                                                  overlaying="y", side="right", showgrid=False, zeroline=False, rangemode="tozero", automargin=True,
                                                   tickfont=dict(size=11, color=TEMA["setupf_linea"])))
                     fig.update_xaxes(tickformat="%d/%m")
                     mostrar_fig(fig)
@@ -2011,7 +2012,7 @@ try:
                                     hovertemplate="%{y:.1f}%<extra>PAD acum.</extra>")
                     estilo_fig(fig, alto=280, leyenda=True)
                     fig.update_layout(title=dict(text="% de CP: día y acumulado del PAD", font=dict(size=13, color=TEMA["text"]), x=0, xanchor="left"),
-                                      legend=dict(y=1.0, x=1, xanchor="right"), margin=dict(t=40))
+                                      legend=dict(orientation="h", y=-0.28, yanchor="top", x=0, xanchor="left"), margin=dict(t=44, b=10), height=340)
                     fig.update_yaxes(range=[0, 105], ticksuffix="%")
                     fig.update_xaxes(tickformat="%d/%m")
                     mostrar_fig(fig)
