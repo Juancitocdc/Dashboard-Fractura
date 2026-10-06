@@ -413,7 +413,7 @@ TEMAS = {
         grid="rgba(255,255,255,0.07)", axis="rgba(255,255,255,0.18)",
         setupf="#3987e5", ramp="#d95926", frac="#199e70", otros="#9085e9",
         cp="#0ca30c", sin_cp="#d03b3b", etapas="#55708f",
-        presion="#e66767", agua="#38bdf8", pill_off="#3a4453",
+        presion="#e66767", agua="#38bdf8", pill_off="#3a4453", setupf_linea="#d4a373",
     ),
     "claro": dict(
         base="light",
@@ -427,7 +427,7 @@ TEMAS = {
         grid="#e1e0d9", axis="#c3c2b7",
         setupf="#2a78d6", ramp="#eb6834", frac="#1baf7a", otros="#4a3aa7",
         cp="#0ca30c", sin_cp="#d03b3b", etapas="#8fa3b8",
-        presion="#e34948", agua="#0284c7", pill_off="#d5dbe3",
+        presion="#e34948", agua="#0284c7", pill_off="#d5dbe3", setupf_linea="#8b5e34",
     ),
 }
 
@@ -1975,11 +1975,29 @@ try:
                                 marker=dict(color=TEMA["etapas"], line_width=0), hovertemplate="%{y} etapas<extra>Etapas</extra>")
                     fig.add_bar(x=fechas_x, y=pd.to_numeric(df_cuadro1_filtrado["CP Logrados"], errors="coerce"), name="CP logrados",
                                 marker=dict(color=TEMA["cp"], line_width=0), hovertemplate="%{y} CP<extra>CP</extra>")
+                    # NPT diario (hs) y Setupf promedio diario (min, sin NPT): salen de la hoja 8 del mismo PAD
+                    h8_pad_c = df_h8[(df_h8['Yacimiento'] == sel_yac_c1) & (df_h8['PAD'] == sel_pad_c1)].copy()
+                    col_fecha_h8c = 'fecha reporte' if 'fecha reporte' in h8_pad_c.columns else 'fecha_reporte'
+                    h8_pad_c['_fecha'] = pd.to_datetime(h8_pad_c[col_fecha_h8c], errors='coerce').dt.date
+                    h8_pad_c = h8_pad_c.dropna(subset=['_fecha']).drop_duplicates('_fecha').set_index('_fecha')
+                    fechas_dia_c = pd.to_datetime(df_cuadro1_filtrado["Fecha Reporte"], format='%d/%m/%Y').dt.date
+                    npt_hs_dia = fechas_dia_c.map((pd.to_numeric(h8_pad_c['NPT Total min'], errors='coerce') / 60).round(2)) if 'NPT Total min' in h8_pad_c.columns else pd.Series(np.nan, index=fechas_dia_c.index)
+                    setupf_prom_dia = fechas_dia_c.map(pd.to_numeric(h8_pad_c['Promedio SETUPF Sin NPT min'], errors='coerce').round(2)) if 'Promedio SETUPF Sin NPT min' in h8_pad_c.columns else pd.Series(np.nan, index=fechas_dia_c.index)
+                    fig.add_bar(x=fechas_x, y=npt_hs_dia, name="NPT (hs)",
+                                marker=dict(color=TEMA["bad"], line_width=0), hovertemplate="%{y:.2f} hs<extra>NPT</extra>")
+                    fig.add_scatter(x=fechas_x, y=setupf_prom_dia, name="Setupf prom (min)", mode="lines+markers", yaxis="y2",
+                                    line=dict(color=TEMA["setupf_linea"], width=2.5),
+                                    marker=dict(size=7, color=TEMA["setupf_linea"], line=dict(color=TEMA["surface"], width=1.5)),
+                                    hovertemplate="%{y:.1f} min<extra>Setupf prom</extra>")
                     linea_std(fig, std_yac, f"STD {fmt_num(std_yac)} etapas/día")
-                    estilo_fig(fig, alto=280, leyenda=True)
-                    fig.update_layout(barmode="group", bargap=0.3, bargroupgap=0.06,
-                                      title=dict(text="Etapas y CP por día", font=dict(size=13, color=TEMA["text"]), x=0, xanchor="left"),
-                                      legend=dict(y=1.0, x=1, xanchor="right"), margin=dict(t=40))
+                    estilo_fig(fig, alto=300, leyenda=True)
+                    fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.05,
+                                      title=dict(text="Etapas, CP y NPT por día · Setupf promedio", font=dict(size=13, color=TEMA["text"]), x=0, xanchor="left"),
+                                      legend=dict(y=1.0, x=1, xanchor="right"), margin=dict(t=44, r=10),
+                                      yaxis=dict(title=dict(text="etapas · NPT (hs)", font=dict(size=11, color=TEMA["muted"]))),
+                                      yaxis2=dict(title=dict(text="Setupf prom (min)", font=dict(size=11, color=TEMA["setupf_linea"])),
+                                                  overlaying="y", side="right", showgrid=False, zeroline=False, rangemode="tozero",
+                                                  tickfont=dict(size=11, color=TEMA["setupf_linea"])))
                     fig.update_xaxes(tickformat="%d/%m")
                     mostrar_fig(fig)
                 with g2:
